@@ -49,30 +49,51 @@ Item {
   readonly property var profiles: store.profiles
   readonly property bool autoApply: store.autoApply
 
+  // The profile to apply here. It may be a fallback (a profile saved without
+  // a dock, or the only candidate while the dock cannot be read).
   readonly property var activeProfile: Model.matchProfile(profiles, fingerprint, dock)
+  // The profile that is exactly this setup; the only one a save may replace.
+  readonly property var ownProfile: Model.exactProfile(profiles, fingerprint, dock)
+  // Set when the last write of the profiles file failed. Kept apart from
+  // lastError, which the next apply would otherwise wipe.
+  property string storeWriteError: ""
   // Connector name per workspace id, for the bar's workspace strip.
   readonly property var workspaceOwners: Model.workspaceOwnerNames(monitors, workspaces, workspaceRules)
-  readonly property bool inSync: Model.matchesLive(activeProfile, monitors, workspaceOwners)
+  readonly property bool inSync: Model.matchesLive(activeProfile, monitors, workspaceOwners, workspaces)
 
   // ---- Applying ----
   // "idle" | "running" | "ok" | "failed"
   property string applyState: "idle"
-  // A layout asked for while another was being applied. It is turned into Lua
-  // only after the next probe, against the monitors that are there by then.
+  // The layout being evaluated right now, as { layout, kind, topology }. Kinds:
+  // "profile" (a saved profile, or an edit that needs no confirmation),
+  // "trial" (an edit waiting to be confirmed), and "rollback".
+  property var applying: null
+  // One layout asked for while another was being evaluated. It is turned into
+  // Lua only after the next probe, and dropped if the screens changed.
   property var pendingApply: null
   property string applyNote: ""
+  // The last layout that was applied and stands: what a rollback returns to.
+  // Null while the user's own configuration is in force.
+  property var standing: null
+  // The topology whose profile was last applied (or released). A hotplug is
+  // acted on when the topology differs from this, not from the last reading,
+  // so a refresh that happens to see the change first cannot swallow it.
+  property string reconciledTopology: ""
 
   // ---- Confirmation ----
   // A layout that changes a monitor's own settings can leave a screen dark, so
-  // it is kept only if the user says so in time. Until then `rollbackLayout`
-  // holds what was there before.
+  // it is kept only if the user says so in time. The countdown starts once the
+  // layout has actually gone in (`confirmArmed`); until then it can be neither
+  // kept nor reverted by hand.
   readonly property int confirmTimeout: 15
   property bool confirmPending: false
+  property bool confirmArmed: false
   property int confirmSeconds: 0
+  property var trialLayout: null
   property var rollbackLayout: null
   property var pendingSave: null
   property string confirmTopology: ""
-  signal confirmationEnded(bool kept)
+  signal confirmationEnded(bool kept, bool saved)
 
   function refresh() { probe("refresh") }
 
@@ -101,55 +122,84 @@ Item {
     var parts = String(text || "").split("\n@@\n")
     var nextMonitors = Model.parseMonitors(parts[0])
     // hyprctl failing (compositor restarting) must not look like "no monitors".
-    if (nextMonitors.length === 0) return
+    // A probe that was meant to act is tried again rather than forgotten.
+    if (nextMonitors.length === 0) {
+      if (reason !== "refresh" && reason !== "applied" && probeRetry.attempts < 5) {
+        probeRetry.attempts += 1
+        probeRetry.reason = reason
+        probeRetry.restart()
+      }
+      return
+    }
+    probeRetry.attempts = 0
 
     var nextDock = Model.parseDock(parts[3])
-    var nextTopology = Model.topology(nextMonitors, nextDock)
-    var changed = root.topology !== nextTopology
 
     root.monitors = nextMonitors
     root.workspaces = Model.parseWorkspaces(parts[1])
     root.workspaceRules = Model.parseWorkspaceRules(parts[2])
     root.dock = nextDock
     root.fingerprint = Model.fingerprint(nextMonitors)
-    root.topology = nextTopology
+    root.topology = Model.topology(nextMonitors, nextDock)
     root.ready = true
-    root.generation += 1
+
+    // Work queued for screens that are no longer the ones connected is moot.
+    if (root.pendingApply && root.pendingApply.topology !== root.topology) root.pendingApply = null
 
     // A pending confirmation was about screens that are no longer the ones
     // connected, or about settings a config reload has just thrown away.
-    if (root.confirmPending && (reason === "reload" || root.topology !== root.confirmTopology))
-      endConfirmation(false, "The displays changed, so the new layout was not kept.")
+    var interrupted = root.confirmPending && (reason === "reload" || root.topology !== root.confirmTopology)
+    if (interrupted) {
+      root.pendingApply = null
+      endConfirmation(false, false, "The displays changed, so the new layout was not kept.")
+    }
+    if (reason === "reload") root.standing = null
 
-    if (root.pendingApply) {
+    // Last, so that listeners see a complete reading and a settled
+    // confirmation state.
+    root.generation += 1
+
+    var due = reason === "startup" || reason === "reload" || interrupted
+      || (reason === "hotplug" && root.topology !== root.reconciledTopology)
+    if (due) {
+      reconcile(reason)
+    } else if (root.pendingApply && !applyProc.busy) {
       var waiting = root.pendingApply
       root.pendingApply = null
-      startApply(waiting)
-      return
+      startApply(waiting.layout, waiting.kind)
     }
+  }
 
-    // A replugged dock renumbers its connectors, so a changed topology needs
-    // the rules again even when the monitors themselves are the same.
-    var mayApply = reason === "startup" || reason === "reload" || (reason === "hotplug" && changed)
-    if (!mayApply) return
-    if (root.activeProfile) {
-      if (root.autoApply) startApply(root.activeProfile)
+  // Bring Hyprland in line with the setup that is connected now: its profile,
+  // or the user's own configuration when there is none to apply.
+  function reconcile(reason) {
+    root.reconciledTopology = root.topology
+    root.pendingApply = null
+    if (root.activeProfile && root.autoApply) {
+      startApply(root.activeProfile, "profile")
+    } else if (reason === "startup") {
+      // Whatever an earlier instance left behind without cleaning up.
+      release("")
     } else if (reason !== "reload") {
-      // No profile for this setup. If an earlier setup (or an earlier instance
-      // that did not get to clean up) left a layout in Hyprland, hand the
-      // screens back to the user's own configuration.
-      Quickshell.execDetached(["hyprctl", "eval", Model.buildReleaseLua("")])
+      release(root.owner)
     }
+  }
+
+  // Hand the screens back to the user's Hyprland configuration, if the named
+  // instance ("" for any) has a layout in force. See Model.buildReleaseLua.
+  function release(instance) {
+    root.standing = null
+    Quickshell.execDetached(["hyprctl", "eval", Model.buildReleaseLua(instance)])
   }
 
   // ---- Applying ----
 
-  function startApply(profileLike) {
+  function startApply(layout, kind) {
     if (applyProc.busy) {
-      root.pendingApply = profileLike
+      root.pendingApply = { layout: layout, kind: kind, topology: root.topology }
       return true
     }
-    var built = Model.buildApplyLua(profileLike, root.monitors, root.owner)
+    var built = Model.buildApplyLua(layout, root.monitors, root.owner)
     if (built.lua === "") {
       root.applyState = "failed"
       root.lastError = "Nothing to apply: none of this profile's displays are connected."
@@ -157,6 +207,7 @@ Item {
     }
     root.applyNote = built.skipped.length > 0 ? "Not connected: " + built.skipped.join(", ") : ""
     root.applyState = "running"
+    root.applying = { layout: layout, kind: kind, topology: root.topology }
     // stderr is folded into stdout so one stream carries the whole answer.
     applyProc.start(["bash", "-c", 'hyprctl eval "$1" 2>&1', "_", built.lua])
     return true
@@ -166,10 +217,10 @@ Item {
     var profile = findProfile(id)
     if (!profile) return false
     if (root.confirmPending) {
-      root.lastError = "Keep or revert the current layout first."
+      root.lastError = "Keep or go back from the current layout first."
       return false
     }
-    return startApply(profile)
+    return startApply(profile, "profile")
   }
 
   // Apply a layout the user has just edited. If it changes any monitor's own
@@ -177,47 +228,64 @@ Item {
   // written once it is.
   function applyGuarded(layout, toSave) {
     if (root.confirmPending) {
-      root.lastError = "Keep or revert the current layout first."
+      root.lastError = "Keep or go back from the current layout first."
+      return false
+    }
+    // A trial is never queued: what is confirmed must be what is on screen.
+    if (applyProc.busy || root.pendingApply) {
+      root.lastError = "Still applying the previous layout. Try again in a moment."
       return false
     }
     if (!Model.changesMonitors(layout.monitors, root.monitors)) {
       if (toSave && !writeStore(Model.upsertProfile(root.store, toSave))) return false
-      return startApply(layout)
+      return startApply(layout, "profile")
     }
-    var before = Model.makeProfile("rollback", "rollback", root.monitors,
-      Model.workspacesFromLive(root.monitors, root.workspaces, root.workspaceRules), root.dock)
-    if (!startApply(layout)) return false
-    root.rollbackLayout = before
+    if (!Model.anyAwake(root.monitors)) {
+      root.lastError = "The screens are asleep, so the new layout could not be shown for you to confirm. Wake them and try again."
+      return false
+    }
+    if (!startApply(layout, "trial")) return false
+    root.trialLayout = layout
+    root.rollbackLayout = root.standing && root.standing.topology === root.topology ? root.standing.layout : null
     root.pendingSave = toSave
     root.confirmTopology = root.topology
     root.confirmSeconds = root.confirmTimeout
+    root.confirmArmed = false
     root.confirmPending = true
-    confirmTimer.restart()
     return true
   }
 
-  function endConfirmation(kept, message) {
+  function endConfirmation(kept, saved, message) {
     confirmTimer.stop()
     root.confirmPending = false
+    root.confirmArmed = false
+    root.trialLayout = null
     root.rollbackLayout = null
     root.pendingSave = null
     if (message) root.lastError = message
-    root.confirmationEnded(kept)
+    root.confirmationEnded(kept, saved)
   }
 
   function keepChanges() {
-    if (!root.confirmPending) return false
+    if (!root.confirmPending || !root.confirmArmed) return false
     var toSave = root.pendingSave
-    endConfirmation(true, "")
-    if (toSave) writeStore(Model.upsertProfile(root.store, toSave))
+    root.standing = { layout: root.trialLayout, topology: root.topology }
+    // Written before listeners hear about it, so they see the saved profile.
+    var saved = toSave ? writeStore(Model.upsertProfile(root.store, toSave)) : false
+    endConfirmation(true, saved, "")
     return true
   }
 
-  function revertChanges() {
-    if (!root.confirmPending) return false
+  // Go back to what stood before the trial: the layout applied before it, or,
+  // if the user's own configuration was in force, exactly that. `force` is for
+  // a trial that failed while going in.
+  function revertChanges(force) {
+    if (!root.confirmPending || (!root.confirmArmed && force !== true)) return false
     var before = root.rollbackLayout
-    endConfirmation(false, "")
-    if (before) startApply(before)
+    endConfirmation(false, false, "")
+    root.pendingApply = null
+    if (before) startApply(before, "rollback")
+    else release(root.owner)
     return true
   }
 
@@ -239,7 +307,7 @@ Item {
   // profile id, or "" when nothing was saved or queued.
   function saveProfile(name, draftMonitors, draftWorkspaces, expectedTopology) {
     if (!root.ready || !canWrite() || !sameTopology(expectedTopology)) return ""
-    var existing = root.activeProfile
+    var existing = root.ownProfile
     var id = existing ? existing.id : Model.newId(profiles)
     var finalName = Model.cleanName(name)
       || (existing ? existing.name : Model.suggestName(draftMonitors, root.dock, profiles))
@@ -270,7 +338,12 @@ Item {
 
   function deleteProfile(id) {
     if (!findProfile(id)) return false
-    return writeStore(Model.removeProfile(root.store, id))
+    var wasActive = root.activeProfile !== null && root.activeProfile.id === id
+    if (!writeStore(Model.removeProfile(root.store, id))) return false
+    // Deleting the profile that is in force puts the user's own configuration
+    // back, rather than leaving a layout nothing accounts for.
+    if (wasActive && !root.confirmPending) release(root.owner)
+    return true
   }
 
   function setAutoApply(enabled) {
@@ -301,7 +374,8 @@ Item {
   function resetStore() {
     if (root.storeState !== "corrupt" && root.storeState !== "unsupported") return false
     return asideProc.start(["bash", "-c",
-      '[[ ! -e "$1" ]] || mv -n "$1" "$1.unreadable-$(date +%Y%m%d-%H%M%S)"', "_", root.storePath])
+      '[[ -e "$1" ]] || exit 0; to=$(mktemp "$1.unreadable-$(date +%Y%m%d-%H%M%S)-XXXX") || exit 1; '
+      + 'mv -f "$1" "$to" && [[ ! -e "$1" ]]', "_", root.storePath])
   }
 
   function statusJson() {
@@ -315,7 +389,9 @@ Item {
       autoApply: root.autoApply,
       applyState: root.applyState,
       confirmPending: root.confirmPending,
+      confirmArmed: root.confirmArmed,
       confirmSeconds: root.confirmSeconds,
+      storeWriteError: root.storeWriteError,
       storeState: root.storeState,
       storeError: root.storeError,
       lastError: root.lastError,
@@ -340,6 +416,20 @@ Item {
     property var collected: null
     property int code: -1
     property bool ended: false
+    // A command that never returns must not block everything queued behind
+    // it. It is killed and reported as failed.
+    property int deadline: 10000
+    property Timer watchdog: Timer {
+      interval: runner.deadline
+      onTriggered: {
+        if (!runner.busy) return
+        runner.running = false
+        runner.code = -1
+        runner.ended = true
+        if (runner.collected === null) runner.collected = ""
+        runner.finish()
+      }
+    }
     signal done(int exitCode, string output)
 
     function start(argv) {
@@ -349,12 +439,14 @@ Item {
       ended = false
       command = argv
       running = true
+      watchdog.restart()
       return true
     }
 
     function finish() {
-      if (collected === null || !ended) return
+      if (!busy || collected === null || !ended) return
       var output = collected
+      watchdog.stop()
       busy = false
       done(code, output)
     }
@@ -374,7 +466,7 @@ Item {
   }
 
   Component.onCompleted: readProc.start(["bash", "-c",
-    'if [[ ! -e "$1" ]]; then echo MISSING; elif [[ -r "$1" ]]; then echo FOUND; cat "$1"; else echo UNREADABLE; fi',
+    'if [[ ! -e "$1" ]]; then echo MISSING; elif [[ -r "$1" ]]; then echo FOUND; cat "$1" || exit 3; else echo UNREADABLE; fi',
     "_", root.storePath])
 
   // What was set through eval outlives this object. When the plugin is
@@ -386,7 +478,7 @@ Item {
     onDone: function(exitCode, output) {
       var newline = output.indexOf("\n")
       var marker = newline < 0 ? output.trim() : output.slice(0, newline)
-      if (marker !== "MISSING" && marker !== "FOUND") {
+      if (exitCode !== 0 || (marker !== "MISSING" && marker !== "FOUND")) {
         root.storeError = "The profiles file could not be read."
         root.storeState = "corrupt"
       } else {
@@ -416,9 +508,8 @@ Item {
         "_", root.configDir, root.storePath, data])
     }
     onDone: function(exitCode, output) {
-      if (exitCode !== 0)
-        root.lastError = "Could not write " + root.storePath
-          + ". The change is not saved and will be lost when the shell restarts."
+      root.storeWriteError = exitCode === 0 ? ""
+        : "Could not write " + root.storePath + ". The change is not saved and will be lost when the shell restarts."
       flush()
     }
   }
@@ -455,16 +546,24 @@ Item {
     id: applyProc
     onDone: function(exitCode, output) {
       var answer = output.trim()
+      var done = root.applying
+      root.applying = null
+      var trial = done !== null && done.kind === "trial" && root.confirmPending
       if (exitCode !== 0 || (answer !== "" && answer !== "ok")) {
         root.applyState = "failed"
-        var wasConfirming = root.confirmPending
-        // A layout that did not go in cleanly is not one to keep.
-        if (wasConfirming) root.revertChanges()
-        root.lastError = (answer !== "" ? answer : "hyprctl eval failed (exit " + exitCode + ").")
-          + (wasConfirming ? " The previous layout is being restored." : "")
+        // A trial that did not go in cleanly is not one to keep.
+        if (trial) root.revertChanges(true)
+        root.lastError = (answer !== "" ? answer : "hyprctl eval failed or timed out.")
+          + (trial ? " Going back to the previous layout." : "")
       } else {
         root.applyState = "ok"
         root.lastError = root.applyNote
+        if (trial) {
+          root.confirmArmed = true
+          confirmTimer.restart()
+        } else if (done !== null && done.kind === "profile") {
+          root.standing = { layout: done.layout, topology: done.topology }
+        }
       }
       settle.restart()
     }
@@ -486,6 +585,14 @@ Item {
       root.confirmSeconds -= 1
       if (root.confirmSeconds <= 0) root.revertChanges()
     }
+  }
+
+  Timer {
+    id: probeRetry
+    property int attempts: 0
+    property string reason: ""
+    interval: 1000
+    onTriggered: root.probe(reason)
   }
 
   // A dock announces its monitors one by one; wait until the burst is over so

@@ -21,7 +21,7 @@ the layout comes back on its own.
   connector names such as `DP-7`, which change every time a dock is replugged.
 - **Dock aware.** With a Thunderbolt or USB4 dock, a profile belongs to that
   dock. Two desks with identical monitors get a profile each, and saving at
-  one never changes the other.
+  one dock never replaces the profile of another.
 - **Hard to lock yourself out.** A layout that changes a display's resolution,
   scale, rotation, position, or on/off state has to be confirmed within 15
   seconds, or the previous layout comes back.
@@ -56,9 +56,12 @@ Click the display icon in the bar.
 3. **Apply** tries the arrangement without saving it. **Save as profile…**
    stores it for the displays that are connected right now.
 4. If the layout changed anything about a display itself, the panel asks
-   **Keep this layout?** Answer within 15 seconds or the previous layout is
-   restored, and a profile being saved is only written once you keep it.
-   Changing only which workspaces go where needs no confirmation.
+   **Keep this layout?** Answer within 15 seconds or you are taken back: to
+   the layout that was applied before, or to your own Hyprland configuration
+   if none was. A profile being saved is only written once you keep it.
+   Changing only which workspaces go where needs no confirmation. The
+   countdown starts when the layout has gone in, and a layout cannot be tried
+   while every screen is asleep.
 
 From then on the profile is applied whenever that set of displays appears, and
 after every Hyprland config reload. Right-click the bar icon to re-apply it by
@@ -144,9 +147,17 @@ runtime settings: they are not written to any file and are gone after
 `hyprctl reload` or a restart, at which point the service applies the profile
 again.
 
-Handing the screens back (no profile for the new setup, or the plugin being
+Handing the screens back (no profile for the new setup, the active profile
+deleted, a trial not kept with nothing applied before it, or the plugin being
 disabled) is done with `hyprctl reload`, which restores exactly what your
 configuration says.
+
+Two things follow from working at runtime, and are worth knowing:
+
+- A profile's workspace rules update the rules from your own configuration in
+  place for as long as the profile is applied. Your files are not touched.
+- A reload also drops anything else that was set at runtime since the last
+  one, such as a scale picked with `omarchy hyprland monitor scaling`.
 
 Every value placed in the evaluated Lua is either a connector name matching
 `[A-Za-z0-9._-]+` or a number, so neither a strangely named output nor a
@@ -199,6 +210,9 @@ rm -r ~/.config/omarchy-display-profiles
   connector. If its connector name changes, it counts as a new setup.
 - While the screens are asleep Hyprland holds a new layout back until they
   wake, so a profile applied then shows up when they come on.
+- If the shell is restarted or the plugin re-enabled at the very moment an
+  older instance is handing the screens back, the profile can be dropped by
+  that reload. It is applied again right after when automatic applying is on.
 - The current resolution and refresh rate of each display are kept; there is no
   mode picker.
 - Mirroring is not managed. Use Omarchy's built-in Display panel for that.

@@ -166,7 +166,7 @@ test("the store survives a round trip", () => {
 
 test("a store that cannot be understood is reported, never treated as empty", () => {
   assert.equal(Model.loadStore("", false).status, "missing")
-  assert.equal(Model.loadStore("  \n", true).status, "missing")
+  assert.equal(Model.loadStore("  \n", true).status, "corrupt")
   assert.equal(Model.loadStore("{broken", true).status, "corrupt")
   assert.equal(Model.loadStore("[]", true).status, "corrupt")
   assert.equal(Model.loadStore('{"version":2,"profiles":[]}', true).status, "unsupported")
@@ -184,7 +184,11 @@ test("a store that cannot be understood is reported, never treated as empty", ()
   assert.equal(broken((p) => { p.monitors[0].x = "12" }), "corrupt")
   assert.equal(broken((p) => { p.monitors[0].transform = 9 }), "corrupt")
   assert.equal(broken((p) => { p.monitors[1].key = p.monitors[0].key }), "corrupt")
-  assert.equal(broken((p) => { p.workspaces = { a: [11] } }), "corrupt")
+  assert.equal(broken((p) => { p.workspaces = { a: [1] } }), "corrupt")
+  assert.equal(broken((p) => { p.workspaces[p.monitors[0].key] = [11] }), "corrupt")
+  assert.equal(broken((p) => { p.workspaces[p.monitors[1].key] = p.workspaces[p.monitors[0].key] }), "corrupt")
+  assert.equal(broken((p) => { p.monitors[0].enabled = "no" }), "corrupt")
+  assert.equal(broken((p) => { p.fingerprint = "some other setup" }), "corrupt")
   assert.equal(broken((p) => { p.id = 'x"; os.exit()' }), "corrupt")
   const twice = JSON.stringify({ version: 1, profiles: [good, good] })
   assert.equal(Model.loadStore(twice, true).status, "corrupt")
@@ -280,6 +284,30 @@ test("matchesLive tells an applied profile from a drifted one", () => {
   const slower = docked()
   slower[1].refreshRate = 30
   assert.equal(Model.matchesLive(profile, slower, owners), false)
+  // A workspace dragged to another monitor while its rule still points home.
+  assert.equal(Model.matchesLive(profile, monitors, owners, [{ id: 3, monitor: "eDP-1" }]), true)
+  assert.equal(Model.matchesLive(profile, monitors, owners, [{ id: 3, monitor: "DP-8" }]), false)
+})
+
+test("saving goes by the exact setup, not by a fallback match", () => {
+  const monitors = docked()
+  const print = Model.fingerprint(monitors)
+  const plain = Model.makeProfile("p1", "Plain", monitors, {}, null)
+  const work = { id: "dock-work", name: "Work dock" }
+  // Applying may fall back to the dockless profile, saving may not reuse it.
+  assert.equal(Model.matchProfile([plain], print, work).id, "p1")
+  assert.equal(Model.exactProfile([plain], print, work), null)
+  assert.equal(Model.exactProfile([plain], print, null).id, "p1")
+  const home = Model.makeProfile("p2", "Home", monitors, {}, { id: "dock-home", name: "Home dock" })
+  assert.equal(Model.matchProfile([home], print, null).id, "p2")
+  assert.equal(Model.exactProfile([home], print, null), null)
+})
+
+test("a layout cannot be confirmed while every screen is asleep", () => {
+  const monitors = docked()
+  assert.equal(Model.anyAwake(monitors), true)
+  monitors.forEach((m) => { m.awake = false })
+  assert.equal(Model.anyAwake(monitors), false)
 })
 
 test("only changes to a monitor's own settings ask for confirmation", () => {
@@ -326,13 +354,52 @@ test("switching off or moving the middle monitor leaves no gap", () => {
   assert.deepEqual(Model.reflow(offset), Model.normalize(offset))
 })
 
+function sound(monitors) {
+  const on = monitors.filter((m) => m.enabled !== false)
+  if (Object.keys(Model.connectedKeys(monitors)).length !== on.length) return false
+  for (let i = 0; i < on.length; i++) for (let j = i + 1; j < on.length; j++)
+    if (Model.overlaps(Model.rectOf(on[i]), Model.rectOf(on[j]))) return false
+  return true
+}
+
+test("repairing islands never makes monitors overlap", () => {
+  const box = (key, x, y, width, height) =>
+    ({ key, name: key, x, y, width, height, scale: 1, transform: 0, enabled: true })
+  // Connected and free of overlaps until the monitor in the middle goes off.
+  const five = [box("a", 200, 0, 100, 200), box("b", 200, 200, 100, 300), box("c", 200, 500, 300, 300),
+                box("d", 500, 500, 100, 300), box("e", 400, 200, 300, 300)]
+  assert.equal(sound(five), true)
+  assert.equal(sound(Model.editMonitor(five, "b", { enabled: false })), true)
+
+  // The same property over many random layouts and edits.
+  let seed = 12345
+  const random = (n) => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n }
+  const sizes = [[1920, 1080], [2560, 1440], [1920, 515], [3840, 2160], [1080, 1920]]
+  for (let round = 0; round < 300; round++) {
+    const count = 2 + random(5)
+    let layout = []
+    for (let i = 0; i < count; i++) {
+      const size = sizes[random(sizes.length)]
+      layout.push(box("m" + i, 0, 0, size[0], size[1]))
+      layout = Model.place(layout, "m" + i, random(8000) - 4000, random(8000) - 4000)
+    }
+    assert.equal(sound(layout), true, "after building, round " + round)
+    const key = "m" + random(count)
+    const edits = [{ enabled: false }, { scale: 2 }, { transform: 1 }]
+    layout = Model.editMonitor(layout, key, edits[random(edits.length)])
+    assert.equal(sound(layout), true, "after an edit, round " + round)
+    layout = Model.place(layout, "m" + random(count), random(8000) - 4000, random(8000) - 4000)
+    assert.equal(sound(layout), true, "after a move, round " + round)
+  }
+})
+
 test("screens are switched on before any is switched off, and release is owner-bound", () => {
   const monitors = docked()
   const profile = Model.makeProfile("p1", "Home", monitors, {}, null)
   profile.monitors[0].enabled = false
   const lua = Model.buildApplyLua(profile, monitors, "abc123").lua
   assert.ok(lua.indexOf('output = "DP-7", mode') < lua.indexOf("disabled = true"))
-  assert.match(lua, /__display_profiles_owner = "abc123"/)
+  assert.match(lua, /^__display_profiles_owner = "abc123"\n/)
   assert.match(Model.buildReleaseLua("abc123"), /^if __display_profiles_owner == "abc123" then/)
   assert.match(Model.buildReleaseLua("abc123"), /hyprctl reload/)
   assert.equal(Model.buildReleaseLua('x" then os.exit() --'), "")

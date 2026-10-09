@@ -70,7 +70,10 @@ Panel {
     }
   }
 
+  // While a layout waits to be confirmed the draft is frozen: what gets kept
+  // (and saved) is the layout that was sent, not something edited since.
   function edit(key, changes) {
+    if (confirming) return
     // The last screen that is on must stay on.
     if (changes.enabled === false && Model.enabledCount(draft) <= 1) return
     draft = Model.editMonitor(draft, key, changes)
@@ -79,12 +82,14 @@ Panel {
   }
 
   function moveTo(key, x, y) {
+    // Assigning the draft again snaps a tile dragged meanwhile back in place.
+    if (confirming) { draft = draft.slice(); return }
     draft = Model.place(draft, key, x, y)
     dirty = true
   }
 
   function assign(id) {
-    if (!selected || selected.enabled === false) return
+    if (confirming || !selected || selected.enabled === false) return
     draftWorkspaces = Model.assignWorkspace(draft, draftWorkspaces, id, selectedKey)
     draftWorkspaces = Model.completeWorkspaces(draft, draftWorkspaces)
     dirty = true
@@ -121,6 +126,7 @@ Panel {
   }
 
   function startNaming(profileId) {
+    if (confirming) return
     renamingId = profileId
     var existing = profileId !== "" ? service.findProfile(profileId) : null
     nameField.text = existing ? existing.name : Model.suggestName(draft, service.dock, profiles)
@@ -183,10 +189,12 @@ Panel {
     function onStoreChanged() {
       if (!root.dirty && !root.confirming) root.loadDraft()
     }
-    function onConfirmationEnded(kept) {
-      // Kept: the screens now look like the draft. Reverted: the draft is
-      // left as it was, still unsaved, so it can be adjusted and tried again.
-      if (kept && root.service.inSync) root.dirty = false
+    function onConfirmationEnded(kept, saved) {
+      // Saved: the draft is the profile now. Otherwise the draft is left as
+      // it was, still unsaved, so it can be adjusted and tried again; unless
+      // the screens changed meanwhile, which makes it a draft for nothing.
+      if (saved) root.dirty = false
+      if (saved || root.service.topology !== root.draftTopology) root.loadDraft()
     }
   }
 
@@ -611,16 +619,18 @@ Panel {
 
             Text {
               textFormat: Text.PlainText
-              text: "Keep this layout? Going back in " + (root.confirming ? root.service.confirmSeconds : 0) + " s"
+              width: parent.width
+              text: root.confirming && root.service.confirmArmed
+                ? "Keep this layout? Going back in " + root.service.confirmSeconds + " s"
+                : "Applying…"
               color: root.fg
               font.family: root.fontFamily
               font.pixelSize: Style.font.body
-              height: keepButton.implicitHeight
-              verticalAlignment: Text.AlignVCenter
+              wrapMode: Text.WordWrap
             }
 
             Button {
-              id: keepButton
+              visible: root.confirming && root.service.confirmArmed
               text: "Keep"
               bordered: true
               selected: true
@@ -630,6 +640,7 @@ Panel {
             }
 
             Button {
+              visible: root.confirming && root.service.confirmArmed
               text: "Go back now"
               bordered: true
               foreground: root.fg
@@ -684,11 +695,34 @@ Panel {
             wrapMode: Text.WordWrap
           }
 
+          Text {
+            textFormat: Text.PlainText
+            visible: root.serviceReady && root.service.storeWriteError !== ""
+            width: parent.width
+            text: root.serviceReady ? root.service.storeWriteError : ""
+            color: bar ? bar.urgent : Color.urgent
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            visible: root.storeBroken
+            width: parent.width
+            text: root.storeBroken ? root.service.storeError + " It has been left untouched, and nothing can be saved until it is fixed or set aside." : ""
+            color: bar ? bar.urgent : Color.urgent
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+
           // The profiles file exists but could not be understood. It is never
           // overwritten; starting over renames it first.
           Button {
             visible: root.storeBroken
-            text: "Set the unreadable profiles file aside and start with none"
+            text: "Set the file aside and start over"
+            tooltipText: "The file is renamed, not deleted"
             bordered: true
             foreground: root.fg
             fontFamily: root.fontFamily
@@ -783,7 +817,7 @@ Panel {
                   bordered: true
                   foreground: root.fg
                   fontFamily: root.fontFamily
-                  onClicked: root.service.deleteProfile(profileRow.modelData.id)
+                  onClicked: if (!root.confirming) root.service.deleteProfile(profileRow.modelData.id)
                 }
               }
             }

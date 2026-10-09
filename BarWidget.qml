@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Layouts
 import Quickshell
 import qs.Commons
 import qs.Ui
@@ -7,6 +8,10 @@ import qs.Ui
 //
 // Left click opens the arrangement panel. Right click re-applies the profile
 // saved for the setup that is connected right now.
+//
+// With `"workspaces": true` in its shell.json entry the widget also lists the
+// workspaces, grouped by the display they belong to, so it can stand in for
+// the built-in workspace switcher.
 BarWidget {
   id: root
   moduleName: "io.github.gillmania.display-profiles"
@@ -32,6 +37,11 @@ BarWidget {
     return "Display Profiles: " + service.activeProfile.name
   }
 
+  readonly property bool showWorkspaces: {
+    var value = setting("workspaces", false)
+    return value === true || value === "true"
+  }
+
   // ---- Panel contract: Bar.findPanelWidget needs open/close/opened here.
   readonly property bool opened: panelLoader.item ? panelLoader.item.opened === true : false
   readonly property bool popoutSwitchClosing: panelLoader.item ? panelLoader.item.popoutSwitchClosing === true : false
@@ -51,8 +61,8 @@ BarWidget {
     if ("service" in target) target.service = root.service
   }
 
-  implicitWidth: button.implicitWidth
-  implicitHeight: button.implicitHeight
+  implicitWidth: content.implicitWidth
+  implicitHeight: content.implicitHeight
 
   onBarChanged: { resolveService(); injectPanel() }
   onSettingsChanged: injectPanel()
@@ -76,18 +86,36 @@ BarWidget {
     }
   }
 
-  BarIconButton {
-    id: button
+  GridLayout {
+    id: content
     anchors.fill: parent
-    bar: root.bar
-    text: "󰍺"
-    tooltipText: root.statusText
-    onPressed: function(b) {
-      if (b === Qt.RightButton) {
-        if (root.service && root.service.activeProfile)
-          root.service.applyProfile(root.service.activeProfile.id)
-      } else {
-        root.toggle()
+    columns: root.vertical ? 1 : 2
+    columnSpacing: 0
+    rowSpacing: 0
+
+    Loader {
+      id: stripLoader
+      active: root.showWorkspaces
+      visible: active
+      source: Qt.resolvedUrl("WorkspaceStrip.qml")
+      onLoaded: {
+        item.bar = Qt.binding(function() { return root.bar })
+        item.service = Qt.binding(function() { return root.service })
+      }
+    }
+
+    BarIconButton {
+      id: button
+      bar: root.bar
+      text: "󰍺"
+      tooltipText: root.statusText
+      onPressed: function(b) {
+        if (b === Qt.RightButton) {
+          if (root.service && root.service.activeProfile)
+            root.service.applyProfile(root.service.activeProfile.id)
+        } else {
+          root.toggle()
+        }
       }
     }
   }

@@ -475,6 +475,52 @@ function workspacesFromLive(monitors, liveWorkspaces, rules) {
   return completeWorkspaces(monitors, workspaces)
 }
 
+// ---- Workspace strip (bar) ---------------------------------------------------
+
+// Connector name of the monitor each workspace 1..WORKSPACE_COUNT belongs to,
+// including workspaces that have not been opened yet.
+function workspaceOwnerNames(monitors, liveWorkspaces, rules) {
+  var byKey = workspacesFromLive(monitors, liveWorkspaces, rules)
+  var names = {}
+  for (var i = 0; i < (monitors || []).length; i++) {
+    var ids = byKey[monitors[i].key] || []
+    for (var j = 0; j < ids.length; j++) names[ids[j]] = monitors[i].name
+  }
+  return names
+}
+
+// The workspaces the bar lists: the first five, plus any other that exists.
+function stripIds(liveIds) {
+  var seen = {}
+  var ids = []
+  function add(value) {
+    var id = Number(value)
+    if (!isFinite(id) || Math.round(id) !== id || id < 1 || id > WORKSPACE_COUNT || seen[id]) return
+    seen[id] = true
+    ids.push(id)
+  }
+  for (var i = 1; i <= 5; i++) add(i)
+  for (var j = 0; j < (liveIds || []).length; j++) add(liveIds[j])
+  ids.sort(function(a, b) { return a - b })
+  return ids
+}
+
+// Split the listed workspaces into runs of neighbours on the same monitor, as
+// [{ monitor, ids }]. Where a workspace sits right now (liveOwners) wins over
+// where it is meant to open (plannedOwners). Numbers stay in order, so a
+// monitor whose workspaces are not consecutive gets more than one run.
+function workspaceRuns(ids, liveOwners, plannedOwners) {
+  var runs = []
+  for (var i = 0; i < (ids || []).length; i++) {
+    var id = ids[i]
+    var monitor = clean((liveOwners && liveOwners[id]) || (plannedOwners && plannedOwners[id]))
+    var last = runs.length > 0 ? runs[runs.length - 1] : null
+    if (last && last.monitor === monitor) last.ids.push(id)
+    else runs.push({ monitor: monitor, ids: [id] })
+  }
+  return runs
+}
+
 // ---- Profiles ---------------------------------------------------------------
 
 function emptyStore() {
@@ -751,6 +797,9 @@ if (typeof module !== "undefined") {
     editMonitor: editMonitor,
     enabledCount: enabledCount,
     monitorByKey: monitorByKey,
-    shortName: shortName
+    shortName: shortName,
+    workspaceOwnerNames: workspaceOwnerNames,
+    stripIds: stripIds,
+    workspaceRuns: workspaceRuns
   }
 }

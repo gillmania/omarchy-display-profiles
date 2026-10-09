@@ -14,6 +14,8 @@ the layout comes back on its own.
   Dropped displays snap edge to edge, so the layout never has gaps or overlaps.
 - **Workspaces per display.** Assign workspaces 1–10 to displays, so
   `SUPER+5` always lands on the screen you expect.
+- **See it in the bar.** Optionally lists the workspaces grouped by display, in
+  place of the built-in workspace switcher.
 - **One profile per setup, applied automatically.** A setup is recognised by
   the displays connected to it (make, model, and serial number), not by
   connector names such as `DP-7`, which change every time a dock is replugged.
@@ -56,6 +58,26 @@ hand. Turn automatic applying off with the last row of the panel.
 
 A profile always belongs to the setup it was saved on. To make one for another
 desk, plug in there and save.
+
+### Workspaces in the bar
+
+The widget can also take over from Omarchy's workspace switcher and show which
+display each workspace belongs to. Neighbouring workspaces on the same display
+share a line under their numbers; the line is strong for the display that bar
+is on and faint for the others. Hover a number for the display's name.
+
+```bash
+omarchy bar set io.github.gillmania.display-profiles workspaces true --json
+omarchy bar move io.github.gillmania.display-profiles --after omarchy.workspaces
+omarchy plugin disable omarchy.workspaces
+```
+
+To go back:
+
+```bash
+omarchy plugin enable omarchy.workspaces
+omarchy bar set io.github.gillmania.display-profiles workspaces false --json
+```
 
 ### Keyboard
 

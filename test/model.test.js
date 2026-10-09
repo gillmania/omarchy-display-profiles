@@ -273,3 +273,38 @@ test("a new profile starts from the workspace rules already in force", () => {
   assert.ok(ws[monitors[0].key].includes(2))
   assert.ok(ws[monitors[0].key].includes(8))
 })
+
+test("workspace strip: owners include workspaces that are not open yet", () => {
+  const monitors = docked()
+  const rules = JSON.stringify([
+    { workspaceString: "5", monitor: "DP-7" },
+    { workspaceString: "6", monitor: "DP-7" },
+    { workspaceString: "7", monitor: "DP-8" }
+  ])
+  const owners = Model.workspaceOwnerNames(monitors, [{ id: 1, monitor: "eDP-1" }], Model.parseWorkspaceRules(rules))
+  assert.equal(owners[1], "eDP-1")
+  assert.equal(owners[6], "DP-7")
+  assert.equal(owners[7], "DP-8")
+  assert.equal(owners[10], "eDP-1")
+})
+
+test("workspace strip: lists the first five plus whatever else exists", () => {
+  assert.deepEqual(Model.stripIds([7, 2, 7, -98, 11, 9]), [1, 2, 3, 4, 5, 7, 9])
+})
+
+test("workspace strip: neighbours on one display form a run, live position wins", () => {
+  const planned = { 1: "eDP-1", 2: "eDP-1", 3: "eDP-1", 4: "eDP-1", 5: "DP-7", 6: "DP-7", 7: "DP-8" }
+  assert.deepEqual(Model.workspaceRuns([1, 2, 3, 4, 5, 7], {}, planned), [
+    { monitor: "eDP-1", ids: [1, 2, 3, 4] },
+    { monitor: "DP-7", ids: [5] },
+    { monitor: "DP-8", ids: [7] }
+  ])
+  // Workspace 3 was moved to the Dell by hand: the strip shows where it is.
+  assert.deepEqual(Model.workspaceRuns([1, 2, 3, 4], { 3: "DP-7" }, planned), [
+    { monitor: "eDP-1", ids: [1, 2] },
+    { monitor: "DP-7", ids: [3] },
+    { monitor: "eDP-1", ids: [4] }
+  ])
+  // Without any owner information everything is one unmarked run.
+  assert.deepEqual(Model.workspaceRuns([1, 2], null, null), [{ monitor: "", ids: [1, 2] }])
+})

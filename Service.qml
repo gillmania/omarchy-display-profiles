@@ -38,6 +38,9 @@ Item {
   readonly property var activeProfile: Model.matchProfile(profiles, fingerprint, dock)
   readonly property bool inSync: Model.matchesLive(activeProfile, monitors, workspaces)
 
+  // Connector name per workspace id, for the bar's workspace strip.
+  readonly property var workspaceOwners: Model.workspaceOwnerNames(monitors, workspaces, workspaceRules)
+
   // Why the next probe was asked for. Only "startup", "hotplug", and "reload"
   // may auto-apply; a refresh for the panel must never move screens around.
   property string probeReason: ""
@@ -161,8 +164,7 @@ Item {
       inSync: root.inSync,
       autoApply: root.autoApply,
       lastError: root.lastError,
-      workspaceRules: root.workspaceRules,
-      workspaces: Model.workspacesFromLive(root.monitors, root.workspaces, root.workspaceRules),
+      workspaceOwners: root.workspaceOwners,
       monitors: root.monitors.map(function(m) {
         return { name: m.name, key: m.key, description: m.description, enabled: m.enabled,
                  width: m.width, height: m.height, x: m.x, y: m.y, scale: m.scale, transform: m.transform }

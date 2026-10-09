@@ -1,0 +1,21 @@
+#!/bin/bash
+
+# Copy the working tree into the Omarchy plugin directory for local testing.
+# The shell hot-reloads plugin code when files under that directory change.
+
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+id=$(jq -r .id manifest.json)
+target="$HOME/.config/omarchy/plugins/$id"
+
+if [[ -d $target/.git ]]; then
+  echo "$target is a git checkout (installed with 'omarchy plugin add'); not overwriting it." >&2
+  exit 1
+fi
+
+mkdir -p "$target"
+cp manifest.json Model.js Service.qml BarWidget.qml Panel.qml README.md LICENSE "$target/"
+omarchy plugin validate "$target"
+omarchy-shell shell rescanPlugins >/dev/null 2>&1 || true
+echo "Installed to $target"

@@ -1,0 +1,21 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node --test test/
+      - name: Manifest is valid JSON with the required fields
+        run: jq -e '.schemaVersion == 1 and (.id | startswith("omarchy.") | not) and has("name") and has("version") and has("kinds") and has("entryPoints")' manifest.json
+      - name: Entry points exist
+        run: jq -r '.entryPoints[]' manifest.json | xargs -I{} test -f {}
+      - name: No symlinks
+        run: test -z "$(find . -path ./.git -prune -o -type l -print)"

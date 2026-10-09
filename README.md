@@ -19,8 +19,12 @@ the layout comes back on its own.
 - **One profile per setup, applied automatically.** A setup is recognised by
   the displays connected to it (make, model, and serial number), not by
   connector names such as `DP-7`, which change every time a dock is replugged.
-- **Dock aware.** With a Thunderbolt or USB4 dock, the dock's own id tells
-  apart two desks that have identical monitors, and gives the profile its name.
+- **Dock aware.** With a Thunderbolt or USB4 dock, a profile belongs to that
+  dock. Two desks with identical monitors get a profile each, and saving at
+  one never changes the other.
+- **Hard to lock yourself out.** A layout that changes a display's resolution,
+  scale, rotation, position, or on/off state has to be confirmed within 15
+  seconds, or the previous layout comes back.
 - **Scale, rotation, and on/off** per display. Only scales the display's mode
   can actually run at are offered.
 - **Leaves your configuration alone.** Nothing under `~/.config/hypr` is ever
@@ -51,13 +55,19 @@ Click the display icon in the bar.
    rotation, and workspaces.
 3. **Apply** tries the arrangement without saving it. **Save as profile…**
    stores it for the displays that are connected right now.
+4. If the layout changed anything about a display itself, the panel asks
+   **Keep this layout?** Answer within 15 seconds or the previous layout is
+   restored, and a profile being saved is only written once you keep it.
+   Changing only which workspaces go where needs no confirmation.
 
 From then on the profile is applied whenever that set of displays appears, and
 after every Hyprland config reload. Right-click the bar icon to re-apply it by
 hand. Turn automatic applying off with the last row of the panel.
 
-A profile always belongs to the setup it was saved on. To make one for another
-desk, plug in there and save.
+A profile always belongs to the setup it was saved on: the same displays behind
+the same dock. To make one for another desk, plug in there and save. When you
+plug into a setup that has no profile, your own Hyprland configuration is put
+back in force.
 
 ### Workspaces in the bar
 
@@ -89,6 +99,8 @@ omarchy bar set io.github.gillmania.display-profiles workspaces false --json
 | `e` | Turn the selected display on or off |
 | `a` or `Enter` | Apply |
 | `s` | Save |
+| `k` or `Enter` | Keep the layout, while the panel is asking |
+| `u` | Go back to the previous layout, while the panel is asking |
 | `Tab` | Switch to the neighbouring bar panel |
 | `Esc` | Close |
 
@@ -103,7 +115,12 @@ omarchy-shell display-profiles apply           # re-apply the profile for this s
 omarchy-shell display-profiles save "Home"     # save the current arrangement
 omarchy-shell display-profiles remove p1
 omarchy-shell display-profiles autoApply false
+omarchy-shell display-profiles keep            # answer "Keep this layout?"
+omarchy-shell display-profiles revert
 ```
+
+`save` stores the arrangement that is on screen right now, so it never needs
+confirming.
 
 Bind one in `~/.config/hypr/bindings.lua` if you want a key for it:
 
@@ -122,9 +139,14 @@ The plugin has two halves, both running inside `omarchy-shell`:
 
 A profile is applied with `hyprctl eval`, as `hl.monitor(...)` and
 `hl.workspace_rule(...)` calls, and existing workspaces are moved to their
-displays. These are runtime settings: they are not written to any file and are
-gone after `hyprctl reload` or a restart, at which point the service applies
-the profile again.
+displays. Displays are switched on before any is switched off. These are
+runtime settings: they are not written to any file and are gone after
+`hyprctl reload` or a restart, at which point the service applies the profile
+again.
+
+Handing the screens back (no profile for the new setup, or the plugin being
+disabled) is done with `hyprctl reload`, which restores exactly what your
+configuration says.
 
 Every value placed in the evaluated Lua is either a connector name matching
 `[A-Za-z0-9._-]+` or a number, so neither a strangely named output nor a
@@ -136,7 +158,11 @@ hand-edited profile file can inject code.
 |---|---|
 | `~/.config/omarchy-display-profiles/profiles.json` | Your saved profiles. Plain JSON, safe to back up or sync. |
 
-That is the only file the plugin writes.
+That is the only file the plugin writes. It is replaced atomically, and never
+overwritten if it could not be read: a file that is damaged, or written by a
+newer version of the plugin, is left alone and reported in the panel. From
+there you can set it aside (it is renamed to `profiles.json.unreadable-<date>`,
+not deleted) and start with an empty list.
 
 ### If you already configure monitors in `monitors.lua`
 
@@ -152,10 +178,10 @@ the profile does the job.
 omarchy plugin remove io.github.gillmania.display-profiles
 ```
 
-Disabling or removing the plugin switches off the workspace rules it added. The
-current arrangement stays until the next `hyprctl reload` or restart, which
-returns everything to your own Hyprland configuration. To delete the saved
-profiles as well:
+Disabling or removing the plugin reloads the Hyprland configuration if a
+profile was applied, so your own monitor and workspace settings are in force
+again straight away. Nothing else is left behind. To delete the saved profiles
+as well:
 
 ```bash
 rm -r ~/.config/omarchy-display-profiles
@@ -166,6 +192,13 @@ rm -r ~/.config/omarchy-display-profiles
 - Dock identity is read from Thunderbolt/USB4 (`/sys/bus/thunderbolt`). With a
   plain USB-C or HDMI connection, a setup is recognised by its displays alone.
   That only matters if two desks have the same serial-less monitors.
+- The first named Thunderbolt device counts as the dock. With another
+  Thunderbolt device attached as well, a profile saved with it and one saved
+  without it are different profiles.
+- A display without a serial number is recognised by make, model, and
+  connector. If its connector name changes, it counts as a new setup.
+- While the screens are asleep Hyprland holds a new layout back until they
+  wake, so a profile applied then shows up when they come on.
 - The current resolution and refresh rate of each display are kept; there is no
   mode picker.
 - Mirroring is not managed. Use Omarchy's built-in Display panel for that.

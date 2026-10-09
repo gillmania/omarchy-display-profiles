@@ -26,7 +26,9 @@ Panel {
   property var draftWorkspaces: ({})
   property string selectedKey: ""
   property bool dirty: false
-  property string draftFingerprint: ""
+  // The topology the draft was made for. Apply and Save hand it to the
+  // service, which refuses a draft made for other screens.
+  property string draftTopology: ""
 
   // ---- Naming (new profile or rename) ----
   property bool naming: false
@@ -40,8 +42,13 @@ Panel {
   readonly property var activeProfile: serviceReady ? service.activeProfile : null
   readonly property var profiles: serviceReady ? service.profiles : []
   readonly property var selected: Model.monitorByKey(draft, selectedKey)
+  readonly property bool confirming: serviceReady && service.confirmPending === true
+  readonly property bool storeBroken: serviceReady
+    && (service.storeState === "corrupt" || service.storeState === "unsupported")
   readonly property string statusLine: {
     if (!serviceReady) return "LOADING"
+    if (confirming) return "KEEP THIS LAYOUT?"
+    if (service.applyState === "failed") return "APPLY FAILED"
     if (dirty) return "UNSAVED CHANGES"
     if (!activeProfile) return "NEW SETUP · NOT SAVED"
     return service.inSync ? "ACTIVE" : "SAVED · NOT APPLIED"
@@ -53,7 +60,7 @@ Panel {
     draftWorkspaces = activeProfile
       ? Model.completeWorkspaces(draft, activeProfile.workspaces)
       : Model.workspacesFromLive(draft, service.workspaces, service.workspaceRules)
-    draftFingerprint = service.fingerprint
+    draftTopology = service.topology
     dirty = false
     if (!Model.monitorByKey(draft, selectedKey)) {
       selectedKey = ""
@@ -95,15 +102,22 @@ Panel {
   }
 
   function applyDraft() {
-    if (!serviceReady) return
-    service.applyDraft(draft, draftWorkspaces)
+    if (!serviceReady || confirming) return
+    service.applyDraft(draft, draftWorkspaces, draftTopology)
+  }
+
+  // Saved at once when only workspaces changed; otherwise the service waits
+  // for the layout to be confirmed, and the draft stays unsaved until then.
+  function saveAs(name) {
+    if (!serviceReady || confirming) return
+    var id = service.saveProfile(name, draft, draftWorkspaces, draftTopology)
+    if (id !== "" && !service.confirmPending) dirty = false
   }
 
   function save() {
-    if (!serviceReady) return
+    if (!serviceReady || confirming) return
     if (!activeProfile) { startNaming("") ; return }
-    service.saveProfile("", draft, draftWorkspaces)
-    dirty = false
+    saveAs("")
   }
 
   function startNaming(profileId) {
@@ -118,7 +132,7 @@ Panel {
   function confirmNaming() {
     if (!naming) return
     if (renamingId !== "") service.renameProfile(renamingId, nameField.text)
-    else { service.saveProfile(nameField.text, draft, draftWorkspaces); dirty = false }
+    else saveAs(nameField.text)
     cancelNaming()
   }
 
@@ -153,14 +167,26 @@ Panel {
   onServiceReadyChanged: if (serviceReady && draft.length === 0) loadDraft()
 
   // Follow the live setup while nothing is being edited, and always when the
-  // set of monitors itself changes: a draft for screens that are gone is moot.
+  // screens themselves change: a draft for screens that are gone is moot.
+  // `generation` is bumped once per reading, after all of its fields are set.
   Connections {
     target: root.service
-    function onMonitorsChanged() {
-      if (!root.dirty || root.service.fingerprint !== root.draftFingerprint) root.loadDraft()
+    function onGenerationChanged() {
+      if (root.confirming) return
+      if (root.service.topology !== root.draftTopology) {
+        if (root.naming) root.cancelNaming()
+        root.loadDraft()
+      } else if (!root.dirty) {
+        root.loadDraft()
+      }
     }
     function onStoreChanged() {
-      if (!root.dirty) root.loadDraft()
+      if (!root.dirty && !root.confirming) root.loadDraft()
+    }
+    function onConfirmationEnded(kept) {
+      // Kept: the screens now look like the draft. Reverted: the draft is
+      // left as it was, still unsaved, so it can be adjusted and tried again.
+      if (kept && root.service.inSync) root.dirty = false
     }
   }
 
@@ -182,10 +208,18 @@ Panel {
         if (dx !== 0) root.cycleSelection(dx)
         else if (dy !== 0) root.cycleSelection(dy)
       }
-      onActivateRequested: root.applyDraft()
+      onActivateRequested: {
+        if (root.confirming) root.service.keepChanges()
+        else root.applyDraft()
+      }
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onTextKey: function(t) {
+        if (root.confirming) {
+          if (t === "k" || t === "K") root.service.keepChanges()
+          else if (t === "u" || t === "U") root.service.revertChanges()
+          return
+        }
         if (t >= "1" && t <= "9") root.assign(Number(t))
         else if (t === "0") root.assign(10)
         else if (t === "a" || t === "A") root.applyDraft()
@@ -534,8 +568,9 @@ Panel {
           PanelSeparator { foreground: root.fg }
 
           // ---------- Actions ----------
-          Row {
-            visible: !root.naming
+          Flow {
+            visible: !root.naming && !root.confirming
+            width: parent.width
             spacing: Style.space(8)
 
             Button {
@@ -548,7 +583,7 @@ Panel {
             }
 
             Button {
-              text: root.activeProfile ? "Save to " + root.activeProfile.name : "Save as profile…"
+              text: root.activeProfile ? "Save to " + Model.shorten(root.activeProfile.name, 24) : "Save as profile…"
               bordered: true
               selected: root.dirty || !root.activeProfile
               foreground: root.fg
@@ -558,11 +593,48 @@ Panel {
 
             Button {
               visible: root.dirty
-              text: "Revert"
+              text: "Discard changes"
               bordered: true
               foreground: root.fg
               fontFamily: root.fontFamily
               onClicked: root.loadDraft()
+            }
+          }
+
+          // Shown after a layout that changed a display's own settings. With
+          // no answer the previous layout comes back, so a screen that went
+          // dark never needs to be fixed blind.
+          Flow {
+            visible: root.confirming
+            width: parent.width
+            spacing: Style.space(8)
+
+            Text {
+              textFormat: Text.PlainText
+              text: "Keep this layout? Going back in " + (root.confirming ? root.service.confirmSeconds : 0) + " s"
+              color: root.fg
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+              height: keepButton.implicitHeight
+              verticalAlignment: Text.AlignVCenter
+            }
+
+            Button {
+              id: keepButton
+              text: "Keep"
+              bordered: true
+              selected: true
+              foreground: root.fg
+              fontFamily: root.fontFamily
+              onClicked: root.service.keepChanges()
+            }
+
+            Button {
+              text: "Go back now"
+              bordered: true
+              foreground: root.fg
+              fontFamily: root.fontFamily
+              onClicked: root.service.revertChanges()
             }
           }
 
@@ -610,6 +682,17 @@ Panel {
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
             wrapMode: Text.WordWrap
+          }
+
+          // The profiles file exists but could not be understood. It is never
+          // overwritten; starting over renames it first.
+          Button {
+            visible: root.storeBroken
+            text: "Set the unreadable profiles file aside and start with none"
+            bordered: true
+            foreground: root.fg
+            fontFamily: root.fontFamily
+            onClicked: root.service.resetStore()
           }
 
           // ---------- Profiles ----------

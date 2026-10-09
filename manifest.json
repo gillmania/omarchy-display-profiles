@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.gillmania.display-profiles",
   "name": "Display Profiles",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "author": "Victor Gillholm",
   "license": "MIT",
   "description": "Arrange your monitors by dragging them, pin workspaces to each one, and have the layout restored automatically for every dock and desk you plug into.",

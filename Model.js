@@ -32,7 +32,7 @@ function monitorKey(monitor) {
 function fingerprint(monitors) {
   var keys = []
   for (var i = 0; i < (monitors || []).length; i++) {
-    var key = monitorKey(monitors[i])
+    var key = clean(monitors[i].key) || monitorKey(monitors[i])
     if (key !== "") keys.push(key)
   }
   keys.sort()
@@ -75,7 +75,25 @@ function parseMonitors(raw) {
       activeWorkspace: m.activeWorkspace ? Number(m.activeWorkspace.id) || 0 : 0
     })
   }
+
+  // Two monitors that report the same make, model, and serial (it happens with
+  // cheap panels and some KVMs) would otherwise share one key and be edited as
+  // one. They are told apart by connector instead.
+  var seen = {}
+  for (var a = 0; a < monitors.length; a++) seen[monitors[a].key] = (seen[monitors[a].key] || 0) + 1
+  for (var b = 0; b < monitors.length; b++)
+    if (seen[monitors[b].key] > 1) monitors[b].key = monitors[b].key + "@" + monitors[b].name
   return monitors
+}
+
+// Everything a generated layout depends on: which monitors, on which
+// connectors, behind which dock. Unlike the fingerprint it changes when a dock
+// is replugged and the connectors are renumbered.
+function topology(monitors, dock) {
+  var parts = []
+  for (var i = 0; i < (monitors || []).length; i++) parts.push(monitors[i].key + "=" + monitors[i].name)
+  parts.sort()
+  return parts.join(" + ") + " # " + (dock && dock.id ? dock.id : "")
 }
 
 // Thunderbolt/USB4 docks expose a stable unique id. `raw` is one dock per line,
@@ -194,6 +212,10 @@ function attachPoints(moving, other) {
 // another monitor and overlapping none. Hyprland lays windows out badly on
 // layouts with gaps or overlaps, so a drop always lands on a valid spot.
 function place(monitors, key, x, y) {
+  return reflow(placeOne(monitors, key, x, y))
+}
+
+function placeOne(monitors, key, x, y) {
   var moving = null
   var others = []
   for (var i = 0; i < (monitors || []).length; i++) {
@@ -232,6 +254,73 @@ function place(monitors, key, x, y) {
   for (var r = 0; r < monitors.length; r++)
     result.push(monitors[r].key === key ? moving : cloneMonitor(monitors[r]))
   return normalize(result)
+}
+
+// Two monitors are neighbours when they share part of an edge, which is what
+// lets the pointer cross from one to the other.
+function touching(a, b) {
+  var sharedY = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y)
+  var sharedX = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x)
+  if ((a.x + a.width === b.x || b.x + b.width === a.x) && sharedY > 0) return true
+  if ((a.y + a.height === b.y || b.y + b.height === a.y) && sharedX > 0) return true
+  return false
+}
+
+// Keys of the enabled monitors reachable from the first one through shared
+// edges.
+function connectedKeys(monitors) {
+  var enabled = []
+  for (var i = 0; i < (monitors || []).length; i++)
+    if (monitors[i].enabled !== false) enabled.push(monitors[i])
+  var reached = {}
+  if (enabled.length === 0) return reached
+  var queue = [enabled[0]]
+  reached[enabled[0].key] = true
+  while (queue.length > 0) {
+    var current = rectOf(queue.shift())
+    for (var j = 0; j < enabled.length; j++) {
+      if (reached[enabled[j].key] || !touching(current, rectOf(enabled[j]))) continue
+      reached[enabled[j].key] = true
+      queue.push(enabled[j])
+    }
+  }
+  return reached
+}
+
+// Pull monitors that were left on an island back against the rest. Moving or
+// switching off the monitor in the middle of a row would otherwise leave a gap
+// the pointer cannot cross. Monitors that are already connected do not move.
+function reflow(monitors) {
+  var current = monitors || []
+  for (var guard = 0; guard < current.length; guard++) {
+    var reached = connectedKeys(current)
+    var stray = null
+    var base = []
+    for (var i = 0; i < current.length; i++) {
+      var m = current[i]
+      if (m.enabled === false) continue
+      if (reached[m.key]) base.push(m)
+      else if (!stray) stray = m
+    }
+    if (!stray) break
+    // placeOne normalizes its own subset; bring the result back into the
+    // coordinates of the full layout through a monitor that did not move.
+    var subset = placeOne(base.concat([stray]), stray.key, stray.x, stray.y)
+    var placed = monitorByKey(subset, stray.key)
+    var anchorBefore = base[0]
+    var anchorAfter = monitorByKey(subset, anchorBefore.key)
+    var next = []
+    for (var k = 0; k < current.length; k++) {
+      var copy = cloneMonitor(current[k])
+      if (copy.key === stray.key) {
+        copy.x = placed.x + (anchorBefore.x - anchorAfter.x)
+        copy.y = placed.y + (anchorBefore.y - anchorAfter.y)
+      }
+      next.push(copy)
+    }
+    current = next
+  }
+  return normalize(current)
 }
 
 // Pull a dragged monitor onto a neighbour's edge when it comes close, so the
@@ -324,7 +413,7 @@ function editMonitor(monitors, key, changes) {
     edited.push(copy)
   }
   if (!target) return monitors
-  if (target.enabled === false) return normalize(edited)
+  if (target.enabled === false) return reflow(edited)
 
   var x = target.x
   var y = target.y
@@ -527,22 +616,98 @@ function emptyStore() {
   return { version: 1, autoApply: true, profiles: [] }
 }
 
-function parseStore(raw) {
-  var store = null
+var NAME_LIMIT = 48
+var SAFE_ID = /^[A-Za-z0-9_-]{1,40}$/
+
+function cleanName(name) {
+  var text = clean(name).replace(/\s+/g, " ")
+  return text.length > NAME_LIMIT ? text.slice(0, NAME_LIMIT).trim() : text
+}
+
+function shorten(text, limit) {
+  var value = clean(text)
+  return value.length > limit ? value.slice(0, Math.max(1, limit - 1)).trim() + "…" : value
+}
+
+function inRange(value, low, high) {
+  return typeof value === "number" && isFinite(value) && value >= low && value <= high
+}
+
+// A stored profile, checked field by field. Returns a clean copy, or null when
+// anything is off: a profile is turned into monitor settings, so a half-valid
+// one is not worth guessing at.
+function validProfile(p) {
+  if (!p || typeof p !== "object" || Array.isArray(p)) return null
+  if (typeof p.id !== "string" || !SAFE_ID.test(p.id)) return null
+  if (typeof p.name !== "string" || typeof p.fingerprint !== "string") return null
+  var dock = null
+  if (p.dock !== null && p.dock !== undefined) {
+    if (typeof p.dock !== "object" || typeof p.dock.id !== "string" || clean(p.dock.id) === "") return null
+    dock = { id: clean(p.dock.id), name: clean(p.dock.name) }
+  }
+  if (!Array.isArray(p.monitors) || p.monitors.length < 1 || p.monitors.length > 16) return null
+  var monitors = []
+  var keys = {}
+  for (var i = 0; i < p.monitors.length; i++) {
+    var m = p.monitors[i]
+    if (!m || typeof m !== "object" || typeof m.key !== "string" || clean(m.key) === "" || keys[m.key]) return null
+    if (!inRange(m.width, 0, 20000) || !inRange(m.height, 0, 20000)) return null
+    if (!inRange(m.x, -100000, 100000) || !inRange(m.y, -100000, 100000)) return null
+    if (!inRange(m.scale, 0.25, 8) || !inRange(m.refreshRate, 0, 1000)) return null
+    if (!inRange(m.transform, 0, 7) || Math.round(m.transform) !== m.transform) return null
+    keys[m.key] = true
+    monitors.push({
+      key: m.key,
+      description: clean(m.description),
+      internal: m.internal === true,
+      enabled: m.enabled !== false,
+      width: m.width, height: m.height, refreshRate: m.refreshRate,
+      x: m.x, y: m.y, scale: m.scale, transform: m.transform
+    })
+  }
+  var workspaces = {}
+  if (p.workspaces !== undefined && p.workspaces !== null) {
+    if (typeof p.workspaces !== "object" || Array.isArray(p.workspaces)) return null
+    for (var key in p.workspaces) {
+      var ids = p.workspaces[key]
+      if (!Array.isArray(ids)) return null
+      for (var w = 0; w < ids.length; w++)
+        if (!inRange(ids[w], 1, WORKSPACE_COUNT) || Math.round(ids[w]) !== ids[w]) return null
+      workspaces[key] = ids.slice()
+    }
+  }
+  return { id: p.id, name: cleanName(p.name), fingerprint: p.fingerprint, dock: dock, monitors: monitors, workspaces: workspaces }
+}
+
+// Read the profiles file. `status` says whether the result may ever be written
+// back: "missing" and "ok" may, "corrupt" and "unsupported" must not, because
+// writing would destroy a file this version could not understand.
+function loadStore(raw, exists) {
+  var text = String(raw === undefined || raw === null ? "" : raw)
+  if (!exists || text.trim() === "") return { status: "missing", store: emptyStore(), error: "" }
+  var parsed = null
   try {
-    store = raw ? JSON.parse(String(raw)) : null
+    parsed = JSON.parse(text)
   } catch (e) {
-    store = null
+    return { status: "corrupt", store: emptyStore(), error: "The profiles file is not valid JSON." }
   }
-  if (!store || typeof store !== "object" || store.version !== 1 || !Array.isArray(store.profiles))
-    return emptyStore()
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+    return { status: "corrupt", store: emptyStore(), error: "The profiles file does not hold a profile list." }
+  if (typeof parsed.version === "number" && parsed.version > 1)
+    return { status: "unsupported", store: emptyStore(),
+             error: "The profiles file was written by a newer version of Display Profiles." }
+  if (parsed.version !== 1 || !Array.isArray(parsed.profiles))
+    return { status: "corrupt", store: emptyStore(), error: "The profiles file does not hold a profile list." }
   var profiles = []
-  for (var i = 0; i < store.profiles.length; i++) {
-    var p = store.profiles[i]
-    if (!p || !clean(p.id) || !Array.isArray(p.monitors)) continue
-    profiles.push(p)
+  var ids = {}
+  for (var i = 0; i < parsed.profiles.length; i++) {
+    var profile = validProfile(parsed.profiles[i])
+    if (!profile || ids[profile.id])
+      return { status: "corrupt", store: emptyStore(), error: "Profile " + (i + 1) + " in the profiles file is not valid." }
+    ids[profile.id] = true
+    profiles.push(profile)
   }
-  return { version: 1, autoApply: store.autoApply !== false, profiles: profiles }
+  return { status: "ok", store: { version: 1, autoApply: parsed.autoApply !== false, profiles: profiles }, error: "" }
 }
 
 function profileMonitor(monitor) {
@@ -587,7 +752,7 @@ function makeProfile(id, name, monitors, workspaces, dock) {
   for (var i = 0; i < (monitors || []).length; i++) list.push(profileMonitor(monitors[i]))
   return {
     id: id,
-    name: clean(name),
+    name: cleanName(name),
     fingerprint: fingerprint(monitors),
     dock: dock ? { id: dock.id, name: dock.name } : null,
     monitors: list,
@@ -595,20 +760,28 @@ function makeProfile(id, name, monitors, workspaces, dock) {
   }
 }
 
-// The profile for this setup. The monitor set decides; the dock only breaks a
-// tie between setups that look identical (the same serial-less monitors at
-// home and at work).
+// The profile saved for exactly this setup: the same monitors behind the same
+// dock. A profile from another dock never matches, so the layout of one desk
+// is neither applied at another nor overwritten by saving there.
+//
+// Two cases cannot be told apart and fall back to the monitors alone: a
+// profile saved without a dock, and a setup whose dock cannot be read right
+// now. With several candidates in that position nothing matches rather than
+// guessing.
 function matchProfile(profiles, print, dock) {
   var sameSetup = []
   for (var i = 0; i < (profiles || []).length; i++)
     if (profiles[i].fingerprint === print) sameSetup.push(profiles[i])
   if (sameSetup.length === 0) return null
 
-  var dockId = dock ? dock.id : ""
-  for (var j = 0; j < sameSetup.length; j++)
-    if (((sameSetup[j].dock && sameSetup[j].dock.id) || "") === dockId) return sameSetup[j]
-  for (var k = 0; k < sameSetup.length; k++)
-    if (!sameSetup[k].dock) return sameSetup[k]
+  var dockId = dock && dock.id ? dock.id : ""
+  var dockless = []
+  for (var j = 0; j < sameSetup.length; j++) {
+    var savedDock = (sameSetup[j].dock && sameSetup[j].dock.id) || ""
+    if (savedDock === dockId) return sameSetup[j]
+    if (savedDock === "") dockless.push(sameSetup[j])
+  }
+  if (dockId !== "") return dockless.length === 1 ? dockless[0] : null
   return sameSetup.length === 1 ? sameSetup[0] : null
 }
 
@@ -630,33 +803,56 @@ function removeProfile(store, id) {
   return { version: 1, autoApply: store.autoApply !== false, profiles: profiles }
 }
 
-// Does the live setup already look like the profile? Used to tell the user
-// whether there is anything to apply or save.
-function matchesLive(profile, monitors, liveWorkspaces) {
+// Does the live setup already look like the profile? `owners` maps workspace
+// id to connector name (workspaceOwnerNames), so workspaces that have not been
+// opened yet count too.
+function matchesLive(profile, monitors, owners) {
   if (!profile) return false
   var live = {}
   for (var i = 0; i < (monitors || []).length; i++) live[monitors[i].key] = monitors[i]
+  var present = []
   for (var j = 0; j < profile.monitors.length; j++) {
     var want = profile.monitors[j]
     var have = live[want.key]
     if (!have) return false
     if ((want.enabled !== false) !== (have.enabled !== false)) return false
+    present.push(want)
     if (want.enabled === false) continue
     if (want.x !== have.x || want.y !== have.y) return false
     if (want.width !== have.width || want.height !== have.height) return false
+    if (Math.abs(num(want.refreshRate, 0) - num(have.refreshRate, 0)) > 0.1) return false
     if (Math.abs(want.scale - have.scale) > 0.011) return false
     if (want.transform !== have.transform) return false
   }
-  if (liveWorkspaces) {
-    for (var w = 0; w < liveWorkspaces.length; w++) {
-      var ws = liveWorkspaces[w]
-      if (ws.id > WORKSPACE_COUNT) continue
-      var ownerKey = workspaceOwner(profile.workspaces, ws.id)
-      if (ownerKey === "" || !live[ownerKey]) continue
-      if (live[ownerKey].name !== ws.monitor) return false
+  if (owners) {
+    var wanted = completeWorkspaces(present, profile.workspaces)
+    for (var key in wanted) {
+      for (var w = 0; w < wanted[key].length; w++)
+        if (owners[wanted[key][w]] !== live[key].name) return false
     }
   }
   return true
+}
+
+// Would applying `wanted` change any monitor's own settings, as opposed to
+// only moving workspaces? Those are the changes that can leave a screen dark,
+// so they are the ones that ask for confirmation.
+function changesMonitors(wanted, monitors) {
+  var live = {}
+  for (var i = 0; i < (monitors || []).length; i++) live[monitors[i].key] = monitors[i]
+  for (var j = 0; j < (wanted || []).length; j++) {
+    var want = wanted[j]
+    var have = live[want.key]
+    if (!have) continue
+    if ((want.enabled !== false) !== (have.enabled !== false)) return true
+    if (want.enabled === false) continue
+    if (want.x !== have.x || want.y !== have.y) return true
+    if (want.width !== have.width || want.height !== have.height) return true
+    if (Math.abs(num(want.refreshRate, 0) - num(have.refreshRate, 0)) > 0.1) return true
+    if (Math.abs(num(want.scale, 1) - num(have.scale, 1)) > 0.011) return true
+    if (num(want.transform, 0) !== num(have.transform, 0)) return true
+  }
+  return false
 }
 
 // ---- Applying ---------------------------------------------------------------
@@ -680,7 +876,10 @@ function luaNumber(value, fallback, decimals) {
 //
 // Returns { lua, skipped }: `skipped` lists profile monitors that are not
 // connected. An empty `lua` means there is nothing safe to apply.
-function buildApplyLua(profile, monitors) {
+//
+// `owner` names the service instance applying it, so that an older instance
+// shutting down late does not switch these rules off (see buildReleaseLua).
+function buildApplyLua(profile, monitors, owner) {
   var nameByKey = {}
   for (var i = 0; i < (monitors || []).length; i++) {
     var live = monitors[i]
@@ -688,22 +887,24 @@ function buildApplyLua(profile, monitors) {
   }
 
   var lines = []
+  var disables = []
   var skipped = []
   var enabledNames = {}
   var enabledCount = 0
   for (var j = 0; j < ((profile && profile.monitors) || []).length; j++) {
     var m = profile.monitors[j]
-    if (m.enabled !== false && nameByKey[m.key]) enabledCount++
+    if (m && m.enabled !== false && nameByKey[m.key]) enabledCount++
   }
   // Never apply a profile that would turn every connected screen off.
   if (enabledCount === 0) return { lua: "", skipped: [] }
 
   for (var k = 0; k < profile.monitors.length; k++) {
     var want = profile.monitors[k]
+    if (!want) continue
     var name = nameByKey[want.key]
     if (!name) { skipped.push(want.description || want.key); continue }
     if (want.enabled === false) {
-      lines.push('hl.monitor({ output = "' + name + '", disabled = true })')
+      disables.push('hl.monitor({ output = "' + name + '", disabled = true })')
       continue
     }
     enabledNames[want.key] = name
@@ -717,16 +918,23 @@ function buildApplyLua(profile, monitors) {
       + luaNumber(want.scale, 1, 6) + ", transform = " + Math.round(num(want.transform, 0)) % 8 + " })")
   }
 
-  // Rules from the previous apply are switched off first; the handles live in
-  // a global because every eval is a separate chunk.
-  lines.push("__display_profiles_rules = __display_profiles_rules or {}")
-  lines.push("for _, rule in ipairs(__display_profiles_rules) do pcall(function() rule:set_enabled(false) end) end")
+  // Screens are switched on before any is switched off, so a failure part way
+  // through leaves more screens lit rather than fewer.
+  lines = lines.concat(disables)
+
+  // Every apply issues a rule for each of the workspaces 1..WORKSPACE_COUNT,
+  // and Hyprland updates an existing rule for the same workspace in place. So
+  // nothing has to be switched off first, and repeated applies do not pile up
+  // dead rules. The handles are kept only to mark that this plugin has state
+  // in Hyprland.
   lines.push("__display_profiles_rules = {}")
+  lines.push('__display_profiles_owner = "' + (SAFE_NAME.test(clean(owner)) ? clean(owner) : "") + '"')
 
   // Workspaces of a monitor that is off or not connected go to the primary
   // rather than being left without a rule.
   var present = []
   for (var p = 0; p < profile.monitors.length; p++) {
+    if (!profile.monitors[p]) continue
     var candidate = cloneMonitor(profile.monitors[p])
     if (!enabledNames[candidate.key]) candidate.enabled = false
     present.push(candidate)
@@ -750,12 +958,25 @@ function buildApplyLua(profile, monitors) {
   return { lua: lines.concat(moves).join("\n"), skipped: skipped }
 }
 
-// Undo what buildApplyLua left behind in Hyprland's Lua state. Monitor
-// settings themselves are restored by `hyprctl reload`.
-function buildReleaseLua() {
+// Hand the screens back to the user's own Hyprland configuration. Rules set
+// through eval update the user's rules in place, so they cannot be taken out
+// one by one; a config reload is what restores exactly what the user wrote,
+// and it drops everything buildApplyLua left behind.
+//
+// With an `owner`, this only happens if that instance was the last to apply,
+// so an instance torn down late does not undo a newer one. Without one, it
+// happens if any instance left something. If nothing was ever applied, the
+// chunk does nothing.
+function buildReleaseLua(owner) {
+  var token = clean(owner)
+  if (token !== "" && !SAFE_NAME.test(token)) return ""
   return [
-    "for _, rule in ipairs(__display_profiles_rules or {}) do pcall(function() rule:set_enabled(false) end) end",
-    "__display_profiles_rules = nil"
+    token === "" ? "if __display_profiles_owner ~= nil then"
+                 : 'if __display_profiles_owner == "' + token + '" then',
+    "__display_profiles_rules = nil",
+    "__display_profiles_owner = nil",
+    'hl.exec_cmd("hyprctl reload")',
+    "end"
   ].join("\n")
 }
 
@@ -781,7 +1002,14 @@ if (typeof module !== "undefined") {
     parseWorkspaceRules: parseWorkspaceRules,
     workspacesFromLive: workspacesFromLive,
     emptyStore: emptyStore,
-    parseStore: parseStore,
+    loadStore: loadStore,
+    validProfile: validProfile,
+    cleanName: cleanName,
+    shorten: shorten,
+    topology: topology,
+    reflow: reflow,
+    connectedKeys: connectedKeys,
+    changesMonitors: changesMonitors,
     suggestName: suggestName,
     newId: newId,
     makeProfile: makeProfile,

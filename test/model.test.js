@@ -118,33 +118,85 @@ test("workspaces owned by a disabled monitor fall back to the primary", () => {
   assert.ok(ws[monitors[0].key].includes(7))
 })
 
-test("a profile is matched by monitor set, with the dock as tie-breaker", () => {
+test("a profile matches only the monitors and dock it was saved on", () => {
   const monitors = docked()
   const print = Model.fingerprint(monitors)
   const home = Model.makeProfile("p1", "Home", monitors, {}, { id: "dock-home", name: "Home dock" })
   const work = Model.makeProfile("p2", "Work", monitors, {}, { id: "dock-work", name: "Work dock" })
   assert.equal(Model.matchProfile([home, work], print, { id: "dock-work" }).id, "p2")
   assert.equal(Model.matchProfile([home, work], print, { id: "dock-home" }).id, "p1")
-  // Two candidates and an unknown dock: refuse to guess.
+  // Another dock is another desk, even with a single saved profile: matching
+  // it would apply Home's layout at Work and let a save there overwrite Home.
   assert.equal(Model.matchProfile([home, work], print, { id: "other" }), null)
-  // One candidate is enough even when the dock differs or is missing.
+  assert.equal(Model.matchProfile([home], print, { id: "dock-work" }), null)
+  // A dock that cannot be read right now: one candidate is taken, two are not.
   assert.equal(Model.matchProfile([home], print, null).id, "p1")
+  assert.equal(Model.matchProfile([home, work], print, null), null)
+  // A profile saved without a dock matches the monitors wherever they are.
+  const plain = Model.makeProfile("p3", "Plain", monitors, {}, null)
+  assert.equal(Model.matchProfile([plain], print, { id: "dock-work" }).id, "p3")
+  assert.equal(Model.matchProfile([plain, work], print, { id: "dock-work" }).id, "p2")
   assert.equal(Model.matchProfile([home], "something else", null), null)
 })
 
-test("the store survives a round trip and rejects junk", () => {
+test("saving at a second dock adds a profile instead of replacing the first", () => {
+  const monitors = docked()
+  const print = Model.fingerprint(monitors)
+  let store = Model.upsertProfile(Model.emptyStore(),
+    Model.makeProfile("p1", "Home", monitors, {}, { id: "dock-home", name: "Home dock" }))
+  const workDock = { id: "dock-work", name: "Work dock" }
+  const existing = Model.matchProfile(store.profiles, print, workDock)
+  const id = existing ? existing.id : Model.newId(store.profiles)
+  store = Model.upsertProfile(store, Model.makeProfile(id, "Work", monitors, {}, workDock))
+  assert.deepEqual(store.profiles.map((p) => p.name), ["Home", "Work"])
+})
+
+test("the store survives a round trip", () => {
   const monitors = docked()
   let store = Model.emptyStore()
   store = Model.upsertProfile(store, Model.makeProfile("p1", "Home", monitors, {}, null))
   store = Model.upsertProfile(store, Model.makeProfile("p1", "Home renamed", monitors, {}, null))
   assert.equal(store.profiles.length, 1)
   assert.equal(store.profiles[0].name, "Home renamed")
-  const reread = Model.parseStore(JSON.stringify(store))
-  assert.deepEqual(reread, store)
-  assert.deepEqual(Model.parseStore("{broken"), Model.emptyStore())
-  assert.deepEqual(Model.parseStore('{"version":2,"profiles":[]}'), Model.emptyStore())
+  const reread = Model.loadStore(JSON.stringify(store), true)
+  assert.equal(reread.status, "ok")
+  assert.deepEqual(reread.store, store)
   assert.equal(Model.removeProfile(store, "p1").profiles.length, 0)
 })
+
+test("a store that cannot be understood is reported, never treated as empty", () => {
+  assert.equal(Model.loadStore("", false).status, "missing")
+  assert.equal(Model.loadStore("  \n", true).status, "missing")
+  assert.equal(Model.loadStore("{broken", true).status, "corrupt")
+  assert.equal(Model.loadStore("[]", true).status, "corrupt")
+  assert.equal(Model.loadStore('{"version":2,"profiles":[]}', true).status, "unsupported")
+  assert.equal(Model.loadStore('{"version":1,"profiles":[]}', true).status, "ok")
+  const good = Model.makeProfile("p1", "Home", docked(), {}, null)
+  const broken = (change) => {
+    const copy = JSON.parse(JSON.stringify(good))
+    change(copy)
+    return Model.loadStore(JSON.stringify({ version: 1, profiles: [copy] }), true).status
+  }
+  assert.equal(broken(() => {}), "ok")
+  assert.equal(broken((p) => { p.monitors = [null] }), "corrupt")
+  assert.equal(broken((p) => { p.monitors = [] }), "corrupt")
+  assert.equal(broken((p) => { p.monitors[0].scale = 0 }), "corrupt")
+  assert.equal(broken((p) => { p.monitors[0].x = "12" }), "corrupt")
+  assert.equal(broken((p) => { p.monitors[0].transform = 9 }), "corrupt")
+  assert.equal(broken((p) => { p.monitors[1].key = p.monitors[0].key }), "corrupt")
+  assert.equal(broken((p) => { p.workspaces = { a: [11] } }), "corrupt")
+  assert.equal(broken((p) => { p.id = 'x"; os.exit()' }), "corrupt")
+  const twice = JSON.stringify({ version: 1, profiles: [good, good] })
+  assert.equal(Model.loadStore(twice, true).status, "corrupt")
+})
+
+test("profile names are trimmed to a length the panel can show", () => {
+  const profile = Model.makeProfile("p1", "  A   very " + "long ".repeat(30), docked(), {}, null)
+  assert.ok(profile.name.length <= 48)
+  assert.ok(profile.name.startsWith("A very long"))
+  assert.equal(Model.shorten("Thunderbolt Dock G4 at home", 12).length, 12)
+})
+
 
 test("names are suggested from the dock and kept unique", () => {
   const monitors = docked()
@@ -217,12 +269,79 @@ test("a disabled monitor is switched off and loses its workspaces", () => {
 test("matchesLive tells an applied profile from a drifted one", () => {
   const monitors = docked()
   const profile = Model.makeProfile("p1", "Home", monitors, {}, null)
-  assert.equal(Model.matchesLive(profile, monitors, []), true)
+  const owners = {}
+  for (let id = 1; id <= 10; id++) owners[id] = "eDP-1"
+  assert.equal(Model.matchesLive(profile, monitors, owners), true)
   const moved = docked()
   moved[1].x += 100
-  assert.equal(Model.matchesLive(profile, moved, []), false)
-  const wrongWorkspace = [{ id: 5, monitor: "DP-7" }]
-  assert.equal(Model.matchesLive(profile, monitors, wrongWorkspace), false)
+  assert.equal(Model.matchesLive(profile, moved, owners), false)
+  // A workspace that is headed for another monitor counts even if unopened.
+  assert.equal(Model.matchesLive(profile, monitors, Object.assign({}, owners, { 5: "DP-7" })), false)
+  const slower = docked()
+  slower[1].refreshRate = 30
+  assert.equal(Model.matchesLive(profile, slower, owners), false)
+})
+
+test("only changes to a monitor's own settings ask for confirmation", () => {
+  const live = docked()
+  assert.equal(Model.changesMonitors(docked(), live), false)
+  const off = docked()
+  off[1].enabled = false
+  assert.equal(Model.changesMonitors(off, live), true)
+  const scaled = docked()
+  scaled[0].scale = 1
+  assert.equal(Model.changesMonitors(scaled, live), true)
+})
+
+test("monitors that report the same identity are kept apart", () => {
+  const twins = Model.parseMonitors(hyprMonitors([LAPTOP,
+    Object.assign({}, DELL_A, { name: "DP-3" }), Object.assign({}, DELL_A, { name: "DP-4", x: 4096 })]))
+  assert.notEqual(twins[1].key, twins[2].key)
+  assert.equal(Model.fingerprint(twins).split(" + ").length, 3)
+})
+
+test("topology changes when connectors are renumbered or the dock changes", () => {
+  const before = docked()
+  const after = docked()
+  after[1].name = "DP-9"
+  assert.equal(Model.fingerprint(before), Model.fingerprint(after))
+  assert.notEqual(Model.topology(before, null), Model.topology(after, null))
+  assert.notEqual(Model.topology(before, { id: "a" }), Model.topology(before, { id: "b" }))
+})
+
+test("switching off or moving the middle monitor leaves no gap", () => {
+  const row = Model.normalize(docked())
+  assert.equal(Object.keys(Model.connectedKeys(row)).length, 3)
+  const withoutMiddle = Model.editMonitor(row, row[1].key, { enabled: false })
+  assert.equal(Object.keys(Model.connectedKeys(withoutMiddle)).length, 2)
+  const a = Model.rectOf(withoutMiddle[0]), b = Model.rectOf(withoutMiddle[2])
+  assert.equal(Model.overlaps(a, b), false)
+  const moved = Model.place(row, row[1].key, 0, -5000)
+  assert.equal(Object.keys(Model.connectedKeys(moved)).length, 3)
+  for (let i = 0; i < 3; i++) for (let j = i + 1; j < 3; j++)
+    assert.equal(Model.overlaps(Model.rectOf(moved[i]), Model.rectOf(moved[j])), false)
+  // A layout that is already connected is left exactly as it is.
+  const offset = Model.normalize(docked())
+  offset[1].y = 100
+  assert.deepEqual(Model.reflow(offset), Model.normalize(offset))
+})
+
+test("screens are switched on before any is switched off, and release is owner-bound", () => {
+  const monitors = docked()
+  const profile = Model.makeProfile("p1", "Home", monitors, {}, null)
+  profile.monitors[0].enabled = false
+  const lua = Model.buildApplyLua(profile, monitors, "abc123").lua
+  assert.ok(lua.indexOf('output = "DP-7", mode') < lua.indexOf("disabled = true"))
+  assert.match(lua, /__display_profiles_owner = "abc123"/)
+  assert.match(Model.buildReleaseLua("abc123"), /^if __display_profiles_owner == "abc123" then/)
+  assert.match(Model.buildReleaseLua("abc123"), /hyprctl reload/)
+  assert.equal(Model.buildReleaseLua('x" then os.exit() --'), "")
+  assert.match(Model.buildReleaseLua(), /^if __display_profiles_owner ~= nil then/)
+  // Rules are updated in place, so an apply never has to disable old ones.
+  assert.doesNotMatch(lua, /set_enabled/)
+  // A null entry in a hand-built layout must not throw.
+  const holed = { monitors: [null].concat(profile.monitors), workspaces: {} }
+  assert.doesNotThrow(() => Model.buildApplyLua(holed, monitors, "abc123"))
 })
 
 test("scale options are the distinct scales a mode can run at", () => {

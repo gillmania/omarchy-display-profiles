@@ -96,6 +96,12 @@ Item {
   property bool ownReloadPending: false
 
   readonly property int confirmTimeout: 15
+  // The systemd timer that takes a trial back if the shell is gone.
+  readonly property string watchdogUnit: "display-profiles-trial-" + owner
+
+  function disarmWatchdog() {
+    Quickshell.execDetached(["systemctl", "--user", "stop", root.watchdogUnit + ".timer"])
+  }
   property bool confirmPending: false
   property bool confirmArmed: false
   property int confirmSeconds: 0
@@ -248,10 +254,20 @@ Item {
     // there and reloads first if so, all in this one command, so that
     // nothing else can come in between. stderr is folded into stdout so one
     // stream carries the whole answer.
+    //
+    // A trial is first given a watchdog outside the shell: a systemd timer
+    // that reloads the Hyprland config, which is the user's own layout. If
+    // the shell dies before the trial is kept or taken back, the screens
+    // still come back. Without the watchdog the trial does not go in.
     applyProc.start(["bash", "-c",
-      'if [ "$2" = plain ]; then case "$(hyprctl eval "$3" 2>&1)" in *"$4"*) '
+      'if [ -n "$5" ]; then systemctl --user stop "$5.timer" >/dev/null 2>&1; '
+      + 'systemd-run --user --quiet --collect --unit="$5" --on-active="$6s" --timer-property=AccuracySec=200ms '
+      + '--setenv=HYPRLAND_INSTANCE_SIGNATURE="$HYPRLAND_INSTANCE_SIGNATURE" --setenv=XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" '
+      + 'hyprctl reload >/dev/null 2>&1 || { echo "Could not arm the safety timer, so the layout was not tried."; exit 97; }; fi; '
+      + 'if [ "$2" = plain ]; then case "$(hyprctl eval "$3" 2>&1)" in *"$4"*) '
       + 'hyprctl reload >/dev/null 2>&1; printf "%s\n" "@@RELOADED";; esac; fi; hyprctl eval "$1" 2>&1',
-      "_", built.lua, built.plain ? "plain" : "rules", Model.RULES_CHECK, Model.RULES_MARK])
+      "_", built.lua, built.plain ? "plain" : "rules", Model.RULES_CHECK, Model.RULES_MARK,
+      kind === "trial" ? root.watchdogUnit : "", String(root.confirmTimeout + 15)])
     return true
   }
 
@@ -300,6 +316,7 @@ Item {
 
   function endConfirmation(kept, saved, message) {
     confirmTimer.stop()
+    disarmWatchdog()
     root.confirmPending = false
     root.confirmArmed = false
     root.confirmPrompted = false

@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import Quickshell
+import Quickshell.Io
 import qs.Commons
 import qs.Ui
 import "Model.js" as Model
@@ -164,6 +165,24 @@ Panel {
     if (!serviceReady || confirming) return
     if (!activeProfile) { startNaming("") ; return }
     saveAs("", activeProfile.id)
+  }
+
+  // The clipboard for the name field, read by a child process: `timeout`
+  // bounds how long it may take and `head` how much of it reaches the shell,
+  // so a clipboard that stalls or never ends costs the child and nothing else.
+  Process {
+    id: clipboardReader
+    command: ["timeout", "-k", "1", "2", "sh", "-c", "wl-paste --no-newline --type text 2>/dev/null | head -c 512"]
+    stdout: StdioCollector { id: clipboardText }
+    onExited: {
+      if (!root.naming) return
+      var from = nameField.selectionStart
+      var to = nameField.selectionEnd
+      var text = Model.pasteText(clipboardText.text, Model.NAME_LIMIT - (nameField.length - (to - from)))
+      if (text === "") return
+      if (to > from) nameField.remove(from, to)
+      nameField.insert(nameField.cursorPosition, text)
+    }
   }
 
   function startNaming(profileId) {
@@ -912,6 +931,27 @@ Panel {
               font.family: root.fontFamily
               onAccepted: root.confirmNaming()
               Keys.onEscapePressed: root.cancelNaming()
+
+              // Qt's own paste reads the Wayland clipboard inside the shell,
+              // for as long and as much as the program that owns it cares to
+              // send. Every way into it is closed here (the paste shortcuts,
+              // the menu, middle click), and the shortcuts go through
+              // clipboardReader instead.
+              maximumLength: Model.NAME_LIMIT
+              ContextMenu.menu: null
+              Keys.onPressed: function(event) {
+                if (event.matches(StandardKey.Paste)
+                    || (event.key === Qt.Key_Insert && (event.modifiers & Qt.ShiftModifier))) {
+                  event.accepted = true
+                  if (!clipboardReader.running) clipboardReader.running = true
+                }
+              }
+
+              MouseArea {
+                anchors.fill: parent
+                acceptedButtons: Qt.MiddleButton | Qt.RightButton
+                onPressed: nameField.forceActiveFocus()
+              }
             }
 
             Button {

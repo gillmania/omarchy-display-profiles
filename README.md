@@ -68,7 +68,8 @@ Requires Omarchy 4 (Quattro) with Hyprland's Lua configuration. There are no
 other dependencies: the plugin calls `hyprctl`, `systemd-run`/`systemctl --user`
 (for the safety timer while a layout is on trial), and `bash` with the usual
 coreutils (`cat`, `mkdir`, `mktemp`, `mv`, `rm`, `date`) to read and write its
-own profiles file. Omarchy ships all of them. Nothing runs as root and
+own profiles file, and `wl-paste` with `timeout` and `head` to paste into the
+profile-name field (see below). Omarchy ships all of them. Nothing runs as root and
 nothing is downloaded.
 
 ## Use
@@ -304,6 +305,11 @@ rm -r "${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-display-setups"
   and the panel says which display is dark. Switching to a text console and
   back (Ctrl+Alt+F3, then Ctrl+Alt+F1 or wherever the session runs) usually
   brings the picture back, and the profile is then applied within seconds.
+- Pasting into the profile-name field works with Ctrl+V and Shift+Insert only,
+  and takes at most the first 512 bytes of text from the clipboard. Qt's own
+  paste (including middle click and the right-click menu) is switched off
+  there, because it reads the clipboard inside the shell with no limit on size
+  or time, and a program that never stops sending would freeze the whole bar.
 - Workspaces above 10 are left alone.
 - At login the profile is applied a moment after the bar appears, not before.
 

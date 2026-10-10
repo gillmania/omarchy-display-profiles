@@ -222,7 +222,7 @@ function attachPoints(moving, other) {
 // layouts with gaps or overlaps, so a drop always lands on a valid spot.
 // `tolerance` is how far, in layout pixels, the drop is pulled onto a guide.
 function place(monitors, key, x, y, tolerance) {
-  return reflow(placeOne(monitors, key, x, y, tolerance))
+  return reflow(placeOne(monitors, key, x, y, tolerance), key)
 }
 
 function clamp(value, low, high) {
@@ -288,7 +288,8 @@ function landing(monitors, key, x, y, tolerance) {
     var attached = false
     for (var q = 0; q < others.length; q++) {
       if (overlaps(rect, others[q])) { free = false; break }
-      if (touching(rect, others[q])) attached = true
+      if (sharedEdge(rect, others[q]) >= Math.min(MIN_SHARED_EDGE, rect.width, rect.height, others[q].width, others[q].height))
+        attached = true
     }
     if (!free || !attached) continue
     var dx = rect.x - want.x
@@ -311,6 +312,16 @@ function placeOne(monitors, key, x, y, tolerance) {
   return normalize(result)
 }
 
+// How much edge two rectangles share, in layout pixels; 0 when they do not
+// sit edge to edge.
+function sharedEdge(a, b) {
+  var sharedY = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y)
+  var sharedX = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x)
+  if (a.x + a.width === b.x || b.x + b.width === a.x) return Math.max(0, sharedY)
+  if (a.y + a.height === b.y || b.y + b.height === a.y) return Math.max(0, sharedX)
+  return 0
+}
+
 // Two monitors are neighbours when they share part of an edge, which is what
 // lets the pointer cross from one to the other.
 function touching(a, b) {
@@ -321,16 +332,18 @@ function touching(a, b) {
   return false
 }
 
-// Keys of the enabled monitors reachable from the first one through shared
-// edges.
-function connectedKeys(monitors) {
+// Keys of the enabled monitors reachable through shared edges from the
+// monitor `startKey`, or from the first one when that is not given.
+function connectedKeys(monitors, startKey) {
   var enabled = []
   for (var i = 0; i < (monitors || []).length; i++)
     if (monitors[i].enabled !== false) enabled.push(monitors[i])
   var reached = {}
   if (enabled.length === 0) return reached
-  var queue = [enabled[0]]
-  reached[enabled[0].key] = true
+  var start = enabled[0]
+  for (var s = 0; s < enabled.length; s++) if (enabled[s].key === startKey) start = enabled[s]
+  var queue = [start]
+  reached[start.key] = true
   while (queue.length > 0) {
     var current = rectOf(queue.shift())
     for (var j = 0; j < enabled.length; j++) {
@@ -344,14 +357,15 @@ function connectedKeys(monitors) {
 
 // Pull monitors that were left on an island back against the rest. Moving or
 // switching off the monitor in the middle of a row would otherwise leave a gap
-// the pointer cannot cross. Monitors already connected to the first one stay
-// where they are; every other one is put, one at a time, against those that
-// are settled so far. Each is checked against the whole settled set, so the
-// result is connected and free of overlaps.
-function reflow(monitors) {
+// the pointer cannot cross. The monitors connected to `anchorKey` (the one
+// that was just moved, so that it stays where it was dropped; the first one
+// otherwise) stay where they are; every other one is put, one at a time,
+// against those that are settled so far. Each is checked against the whole
+// settled set, so the result is connected and free of overlaps.
+function reflow(monitors, anchorKey) {
   var current = []
   for (var i = 0; i < (monitors || []).length; i++) current.push(cloneMonitor(monitors[i]))
-  var reached = connectedKeys(current)
+  var reached = connectedKeys(current, anchorKey)
   var settled = []
   var strays = []
   for (var j = 0; j < current.length; j++) {
@@ -742,7 +756,10 @@ function validProfile(p) {
   // The fingerprint is what a profile is matched by; one that does not
   // describe the profile's own monitors would match the wrong setup.
   if (p.fingerprint !== fingerprint(monitors)) return null
-  return { id: p.id, name: cleanName(p.name), fingerprint: p.fingerprint, dock: dock, monitors: monitors, workspaces: workspaces }
+  if (p.dedicated !== undefined && typeof p.dedicated !== "boolean") return null
+  var dedicated = p.dedicated !== false
+  return { id: p.id, name: cleanName(p.name), fingerprint: p.fingerprint, dock: dock,
+           dedicated: dedicated, monitors: monitors, workspaces: dedicated ? workspaces : {} }
 }
 
 // Read the profiles file. `status` says whether the result may ever be written
@@ -818,14 +835,27 @@ function newId(profiles) {
   return "p" + Date.now()
 }
 
-function makeProfile(id, name, monitors, workspaces, dock) {
+// `dedicated` is whether the profile also says which workspaces belong on
+// which display. Without it only the displays themselves are arranged and the
+// workspaces are left to the user's own configuration.
+function makeProfile(id, name, monitors, workspaces, dock, dedicated) {
   var list = []
   for (var i = 0; i < (monitors || []).length; i++) list.push(profileMonitor(monitors[i]))
+  if (dedicated === false) return {
+    id: id,
+    name: cleanName(name),
+    fingerprint: fingerprint(monitors),
+    dock: dock ? { id: dock.id, name: dock.name } : null,
+    dedicated: false,
+    monitors: list,
+    workspaces: {}
+  }
   return {
     id: id,
     name: cleanName(name),
     fingerprint: fingerprint(monitors),
     dock: dock ? { id: dock.id, name: dock.name } : null,
+    dedicated: true,
     monitors: list,
     workspaces: completeWorkspaces(list, workspaces)
   }
@@ -958,7 +988,7 @@ function matchesLive(profile, monitors, owners, liveWorkspaces) {
     if (Math.abs(want.scale - have.scale) > 0.011) return false
     if (want.transform !== have.transform) return false
   }
-  if (owners) {
+  if (owners && profile.dedicated !== false) {
     var wanted = completeWorkspaces(present, profile.workspaces)
     for (var key in wanted) {
       for (var w = 0; w < wanted[key].length; w++)
@@ -1037,7 +1067,7 @@ function buildApplyLua(profile, monitors, owner) {
     if (m && m.enabled !== false && nameByKey[m.key]) enabledCount++
   }
   // Never apply a profile that would turn every connected screen off.
-  if (enabledCount === 0) return { lua: "", skipped: [] }
+  if (enabledCount === 0) return { lua: "", skipped: [], plain: false }
 
   for (var k = 0; k < profile.monitors.length; k++) {
     var want = profile.monitors[k]
@@ -1072,6 +1102,12 @@ function buildApplyLua(profile, monitors, owner) {
   // dead rules. The handles are kept only to mark that this plugin has state
   // in Hyprland.
   lines.push("__display_profiles_rules = {}")
+  // A profile without dedicated workspaces arranges the displays and leaves
+  // the workspaces to the user's own rules. `plain` tells the caller that
+  // rules an earlier layout left behind have to be cleared first.
+  if (profile.dedicated === false) return { lua: lines.join("\n"), skipped: skipped, plain: true }
+  // Set before the first rule, so a chunk failing part way still says so.
+  lines.push("__display_profiles_has_rules = true")
 
   // Workspaces of a monitor that is off or not connected go to the primary
   // rather than being left without a rule.
@@ -1098,7 +1134,7 @@ function buildApplyLua(profile, monitors, owner) {
     }
   }
 
-  return { lua: lines.concat(moves).join("\n"), skipped: skipped }
+  return { lua: lines.concat(moves).join("\n"), skipped: skipped, plain: false }
 }
 
 // Hand the screens back to the user's own Hyprland configuration. Rules set
@@ -1110,6 +1146,12 @@ function buildApplyLua(profile, monitors, owner) {
 // so an instance torn down late does not undo a newer one. Without one, it
 // happens if any instance left something. If nothing was ever applied, the
 // chunk does nothing.
+// A chunk that fails, with RULES_MARK in its message, when workspace rules
+// from a layout with dedicated workspaces are in Hyprland. The answer lives in
+// Hyprland's own Lua state, so it is right after a shell restart too.
+var RULES_MARK = "DISPLAY_PROFILES_RULES"
+var RULES_CHECK = 'if __display_profiles_has_rules then error("' + RULES_MARK + '") end'
+
 function buildReleaseLua(owner) {
   var token = clean(owner)
   if (token !== "" && !SAFE_NAME.test(token)) return ""
@@ -1117,6 +1159,7 @@ function buildReleaseLua(owner) {
     token === "" ? "if __display_profiles_owner ~= nil then"
                  : 'if __display_profiles_owner == "' + token + '" then',
     "__display_profiles_rules = nil",
+    "__display_profiles_has_rules = nil",
     "__display_profiles_owner = nil",
     'hl.exec_cmd("hyprctl reload")',
     "end"
@@ -1169,6 +1212,8 @@ if (typeof module !== "undefined") {
     matchesLive: matchesLive,
     buildApplyLua: buildApplyLua,
     buildReleaseLua: buildReleaseLua,
+    RULES_MARK: RULES_MARK,
+    RULES_CHECK: RULES_CHECK,
     cleanScale: cleanScale,
     scaleOptions: scaleOptions,
     sameScale: sameScale,

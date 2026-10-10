@@ -554,3 +554,58 @@ test("one setup can hold several profiles, and the chosen one is used", () => {
   const stale = Model.loadStore(JSON.stringify({ ...store, selected: ["gone", 7, "p3"] }), true)
   assert.deepEqual(stale.store.selected, ["p3"])
 })
+
+test("without dedicated workspaces a profile only arranges the displays", () => {
+  const monitors = docked()
+  const dock = { id: "dock-home", name: "Home" }
+  const plain = Model.makeProfile("p1", "Plain", monitors, { [monitors[0].key]: [1, 2] }, dock, false)
+  assert.equal(plain.dedicated, false)
+  assert.deepEqual(plain.workspaces, {})
+  const lua = Model.buildApplyLua(plain, monitors, "owner1").lua
+  assert.match(lua, /hl\.monitor/)
+  assert.doesNotMatch(lua, /workspace_rule|workspace\.move/)
+  // Where the workspaces happen to be does not make it drift.
+  assert.equal(Model.matchesLive(plain, monitors, { 1: "DP-8" }, [{ id: 1, monitor: "DP-8" }]), true)
+
+  const loaded = Model.loadStore(JSON.stringify(Model.upsertProfile(Model.emptyStore(), plain)), true)
+  assert.equal(loaded.status, "ok")
+  assert.equal(loaded.store.profiles[0].dedicated, false)
+
+  // Profiles written before the setting existed keep their workspaces.
+  const old = Model.makeProfile("p2", "Old", monitors, {}, dock)
+  delete old.dedicated
+  assert.equal(Model.validProfile(old).dedicated, true)
+  assert.match(Model.buildApplyLua(old, monitors, "owner1").lua, /workspace_rule/)
+})
+
+test("a display dragged past the end of a row stays where it was dropped", () => {
+  const square = (name, x) => ({ name, make: "M", model: "X", serial: name, width: 1000, height: 1000, x })
+  const row = Model.parseMonitors(hyprMonitors([square("A", 0), square("B", 1000), square("C", 2000)]))
+  const spot = Model.landing(row, row[1].key, 3000, 0, 0)
+  assert.deepEqual(spot, { x: 3000, y: 0 })
+  const placed = Model.place(row, row[1].key, 3000, 0, 0)
+  const order = placed.slice().sort((a, b) => a.x - b.x).map((m) => m.name)
+  assert.deepEqual(order, ["A", "C", "B"])
+  assert.deepEqual(placed.map((m) => m.x).sort((a, b) => a - b), [0, 1000, 2000])
+})
+
+test("a drop never leaves displays joined by a sliver", () => {
+  const square = (name, x) => ({ name, make: "M", model: "X", serial: name, width: 1000, height: 1000, x })
+  const pair = Model.parseMonitors(hyprMonitors([square("A", 0), square("B", 1000)]))
+  const spot = Model.landing(pair, pair[1].key, 1000, 999, 0)
+  const shared = Math.min(1000, spot.y + 1000) - Math.max(0, spot.y)
+  const sharedX = Math.min(1000, spot.x + 1000) - Math.max(0, spot.x)
+  assert.ok(Math.max(shared, sharedX) >= 200, JSON.stringify(spot))
+})
+
+test("only a layout with dedicated workspaces marks its rules in Hyprland", () => {
+  const monitors = docked()
+  const withRules = Model.buildApplyLua(Model.makeProfile("p1", "A", monitors, {}, null, true), monitors, "o")
+  const plain = Model.buildApplyLua(Model.makeProfile("p2", "B", monitors, {}, null, false), monitors, "o")
+  assert.equal(withRules.plain, false)
+  assert.equal(plain.plain, true)
+  assert.ok(withRules.lua.indexOf("__display_profiles_has_rules = true") < withRules.lua.indexOf("hl.workspace_rule"))
+  assert.doesNotMatch(plain.lua, /has_rules/)
+  assert.match(Model.RULES_CHECK, new RegExp(Model.RULES_MARK))
+  assert.match(Model.buildReleaseLua("o"), /__display_profiles_has_rules = nil/)
+})

@@ -85,14 +85,14 @@ BarWidget {
     var focused = Hyprland.focusedMonitor
     return window && window.screen && focused ? window.screen.name === focused.name : false
   }
-  property bool confirmShown: false
-  onConfirmWaitingChanged: if (!confirmWaiting) confirmShown = false
-
   Timer {
     interval: 400
-    running: root.confirmWaiting && !root.confirmShown && root.onFocusedScreen && panelLoader.item !== null
+    running: root.confirmWaiting && root.service.confirmPrompted !== true
+      && root.onFocusedScreen && panelLoader.item !== null
     onTriggered: {
-      root.confirmShown = true
+      // Shared through the service, so only one bar does this.
+      if (root.service.confirmPrompted === true) return
+      root.service.confirmPrompted = true
       if (!root.opened) root.open()
     }
   }
@@ -129,7 +129,8 @@ BarWidget {
     BarIconButton {
       id: button
       bar: root.bar
-      text: "󰍺"
+      // Not the two-monitor glyph: Omarchy's own Display widget uses that.
+      text: "󰨇"
       tooltipText: root.statusText
       onPressed: function(b) {
         if (b === Qt.RightButton) {

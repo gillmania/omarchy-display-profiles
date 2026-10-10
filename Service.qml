@@ -88,6 +88,13 @@ Item {
   // it is kept only if the user says so in time. The countdown starts once the
   // layout has actually gone in (`confirmArmed`); until then it can be neither
   // kept nor reverted by hand.
+  // Set once a bar has brought the panel back for the confirmation at hand,
+  // so that it happens once however many bars there are.
+  property bool confirmPrompted: false
+  // A config reload done by an apply (see startApply) whose event has not
+  // arrived yet. That event is not news and must not be acted on.
+  property bool ownReloadPending: false
+
   readonly property int confirmTimeout: 15
   property bool confirmPending: false
   property bool confirmArmed: false
@@ -202,6 +209,8 @@ Item {
       root.pendingApply = { layout: layout, kind: kind, topology: root.topology }
       return true
     }
+    // Starting now supersedes whatever was still waiting its turn.
+    root.pendingApply = null
     var built = Model.buildApplyLua(layout, root.monitors, root.owner)
     if (built.lua === "") {
       root.applyState = "failed"
@@ -210,9 +219,17 @@ Item {
     }
     root.applyNote = built.skipped.length > 0 ? "Not connected: " + built.skipped.join(", ") : ""
     root.applyState = "running"
-    root.applying = { layout: layout, kind: kind, topology: root.topology }
-    // stderr is folded into stdout so one stream carries the whole answer.
-    applyProc.start(["bash", "-c", 'hyprctl eval "$1" 2>&1', "_", built.lua])
+    root.applying = { layout: layout, kind: kind, topology: root.topology, mayReload: built.plain, reloadSeen: false }
+    // Workspace rules set by an earlier layout replaced the user's own in
+    // place, and only a config reload brings those back. A layout without
+    // dedicated workspaces therefore asks Hyprland whether such rules are
+    // there and reloads first if so, all in this one command, so that
+    // nothing else can come in between. stderr is folded into stdout so one
+    // stream carries the whole answer.
+    applyProc.start(["bash", "-c",
+      'if [ "$2" = plain ]; then case "$(hyprctl eval "$3" 2>&1)" in *"$4"*) '
+      + 'hyprctl reload >/dev/null 2>&1; printf "%s\n" "@@RELOADED";; esac; fi; hyprctl eval "$1" 2>&1',
+      "_", built.lua, built.plain ? "plain" : "rules", Model.RULES_CHECK, Model.RULES_MARK])
     return true
   }
 
@@ -254,6 +271,7 @@ Item {
     root.confirmTopology = root.topology
     root.confirmSeconds = root.confirmTimeout
     root.confirmArmed = false
+    root.confirmPrompted = false
     root.confirmPending = true
     return true
   }
@@ -262,6 +280,7 @@ Item {
     confirmTimer.stop()
     root.confirmPending = false
     root.confirmArmed = false
+    root.confirmPrompted = false
     root.trialLayout = null
     root.rollbackLayout = null
     root.pendingSave = null
@@ -300,9 +319,9 @@ Item {
 
   // Try an arrangement without saving it. `expectedTopology` is the topology
   // the draft was made for; a draft for other screens is refused.
-  function applyDraft(draftMonitors, draftWorkspaces, expectedTopology) {
+  function applyDraft(draftMonitors, draftWorkspaces, expectedTopology, dedicated) {
     if (!root.ready || !sameTopology(expectedTopology)) return false
-    return applyGuarded(Model.makeProfile("draft", "draft", draftMonitors, draftWorkspaces, root.dock), null)
+    return applyGuarded(Model.makeProfile("draft", "draft", draftMonitors, draftWorkspaces, root.dock, dedicated), null)
   }
 
   // A saved profile becomes the chosen one of its setup.
@@ -314,7 +333,7 @@ Item {
   // `targetId` naming a profile of exactly this setup, that profile is
   // updated; otherwise a new one is added beside any that exist. Returns the
   // profile id, or "" when nothing was saved or queued.
-  function saveProfile(name, draftMonitors, draftWorkspaces, expectedTopology, targetId) {
+  function saveProfile(name, draftMonitors, draftWorkspaces, expectedTopology, targetId, dedicated) {
     if (!root.ready || !canWrite() || !sameTopology(expectedTopology)) return ""
     var existing = null
     for (var i = 0; i < root.ownProfiles.length; i++)
@@ -322,7 +341,7 @@ Item {
     var id = existing ? existing.id : Model.newId(profiles)
     var finalName = Model.cleanName(name)
       || (existing ? existing.name : Model.suggestName(draftMonitors, root.dock, profiles))
-    var profile = Model.makeProfile(id, finalName, draftMonitors, draftWorkspaces, root.dock)
+    var profile = Model.makeProfile(id, finalName, draftMonitors, draftWorkspaces, root.dock, dedicated)
     return applyGuarded(profile, profile) ? id : ""
   }
 
@@ -331,7 +350,8 @@ Item {
   function saveCurrent(name) {
     var target = Model.cleanName(name) === "" && root.activeProfile ? root.activeProfile.id : ""
     return saveProfile(name, root.monitors,
-      Model.workspacesFromLive(root.monitors, root.workspaces, root.workspaceRules), root.topology, target)
+      Model.workspacesFromLive(root.monitors, root.workspaces, root.workspaceRules), root.topology, target,
+      root.activeProfile ? root.activeProfile.dedicated !== false : true)
   }
 
   // Change to another profile saved for the setup that is connected, and
@@ -431,6 +451,7 @@ Item {
       applyState: root.applyState,
       confirmPending: root.confirmPending,
       confirmArmed: root.confirmArmed,
+      dedicated: root.activeProfile ? root.activeProfile.dedicated !== false : null,
       confirmSeconds: root.confirmSeconds,
       storeWriteError: root.storeWriteError,
       storeState: root.storeState,
@@ -586,9 +607,21 @@ Item {
   Runner {
     id: applyProc
     onDone: function(exitCode, output) {
-      var answer = output.trim()
       var done = root.applying
       root.applying = null
+      // The command reloaded the config itself; the event for that is either
+      // already seen or still on its way. A reload seen while the command ran
+      // without doing one was somebody else's, and is acted on as usual.
+      var reloaded = output.indexOf("@@RELOADED") !== -1
+      var answer = output.replace("@@RELOADED", "").trim()
+      if (done !== null) {
+        if (reloaded && !done.reloadSeen) {
+          root.ownReloadPending = true
+          ownReloadWindow.restart()
+        } else if (!reloaded && done.reloadSeen) {
+          reloadDebounce.restart()
+        }
+      }
       var trial = done !== null && done.kind === "trial" && root.confirmPending
       if (exitCode !== 0 || (answer !== "" && answer !== "ok")) {
         root.applyState = "failed"
@@ -602,7 +635,7 @@ Item {
         if (trial) {
           root.confirmArmed = true
           confirmTimer.restart()
-        } else if (done !== null && done.kind === "profile") {
+        } else if (done !== null) {
           root.standing = { layout: done.layout, topology: done.topology }
         }
       }
@@ -650,6 +683,12 @@ Item {
     onTriggered: root.probe("reload")
   }
 
+  Timer {
+    id: ownReloadWindow
+    interval: 1500
+    onTriggered: root.ownReloadPending = false
+  }
+
   Connections {
     target: Hyprland
     function onRawEvent(event) {
@@ -658,8 +697,13 @@ Item {
       if (name.indexOf("monitoradded") === 0 || name.indexOf("monitorremoved") === 0)
         hotplugDebounce.restart()
       // A config reload drops everything set through eval, so put it back.
-      else if (name === "configreloaded")
-        reloadDebounce.restart()
+      else if (name === "configreloaded") {
+        // An apply that may reload the config itself expects one such event.
+        var running = applyProc.busy ? root.applying : null
+        if (running && running.mayReload && !running.reloadSeen) running.reloadSeen = true
+        else if (root.ownReloadPending) root.ownReloadPending = false
+        else reloadDebounce.restart()
+      }
     }
   }
 

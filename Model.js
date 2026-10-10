@@ -39,6 +39,19 @@ function fingerprint(monitors) {
   return keys.join(" + ")
 }
 
+// A monitor Hyprland counts as on but could not give any mode: connected and
+// dark. Every rule set for it makes Hyprland try all of its modes again, which
+// stalls the whole session for seconds, so nothing is applied on its own
+// account until the monitor shows a picture.
+function isDark(monitor) {
+  return !!monitor && monitor.enabled === true && !monitor.mirror
+    && (!(monitor.width > 0) || !(monitor.height > 0))
+}
+
+function darkMonitors(monitors) {
+  return (monitors || []).filter(isDark)
+}
+
 function parseMonitors(raw) {
   var parsed = []
   try {
@@ -1530,6 +1543,8 @@ if (typeof module !== "undefined") {
     shortName: shortName,
     displayNumber: displayNumber,
     hasDesktop: hasDesktop,
+    isDark: isDark,
+    darkMonitors: darkMonitors,
     quickChoices: quickChoices,
     quickLayout: quickLayout,
     quickChoiceOf: quickChoiceOf,

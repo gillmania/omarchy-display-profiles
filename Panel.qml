@@ -936,6 +936,17 @@ Panel {
 
           Text {
             textFormat: Text.PlainText
+            visible: root.serviceReady && root.service.darkNotice !== ""
+            width: parent.width
+            text: root.serviceReady ? root.service.darkNotice : ""
+            color: bar ? bar.urgent : Color.urgent
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+
+          Text {
+            textFormat: Text.PlainText
             visible: root.serviceReady && root.service.lastError !== ""
             width: parent.width
             text: root.serviceReady ? root.service.lastError : ""

@@ -5,7 +5,7 @@ import Quickshell.Hyprland
 import qs.Commons
 import qs.Ui
 
-// Bar button for Display Profiles, and the host for its panel.
+// Bar button for Display Setups, and the host for its panel.
 //
 // Left click opens the arrangement panel. Right click re-applies the profile
 // saved for the setup that is connected right now.
@@ -15,7 +15,7 @@ import qs.Ui
 // the built-in workspace switcher.
 BarWidget {
   id: root
-  moduleName: "io.github.gillmania.display-profiles"
+  moduleName: "io.github.gillmania.display-setups"
 
   // The service is this plugin's own headless half. It can finish loading
   // after the widget does, so it is looked up until it is there.
@@ -33,9 +33,10 @@ BarWidget {
   }
 
   readonly property string statusText: {
-    if (!service || !service.ready) return "Display Profiles"
-    if (!service.activeProfile) return "Display Profiles: this setup is not saved"
-    return "Display Profiles: " + service.activeProfile.name
+    if (!service || !service.ready) return "Display Setups"
+    if (!service.activeProfile) return "Display Setups: this setup is not saved"
+    var more = service.setupProfiles && service.setupProfiles.length > 1 ? " (scroll to switch)" : ""
+    return "Display Setups: " + service.activeProfile.name + more
   }
 
   readonly property bool showWorkspaces: {
@@ -97,6 +98,17 @@ BarWidget {
     }
   }
 
+  // Middle click and the wheel step through the profiles saved for what is
+  // connected. One step at a time: a wheel sends many events per notch.
+  function cycle(step) {
+    if (!root.service || cycleGate.running) return
+    if (!root.service.setupProfiles || root.service.setupProfiles.length < 2) return
+    cycleGate.restart()
+    root.service.nextProfile(step)
+  }
+
+  Timer { id: cycleGate; interval: 500 }
+
   // New displays nothing is saved for, or the `choose` call: bring the panel
   // up with its quick choices. `"openOnNewDisplay": false` in the widget's
   // shell.json entry turns the automatic part off.
@@ -155,10 +167,13 @@ BarWidget {
         if (b === Qt.RightButton) {
           if (root.service && root.service.activeProfile)
             root.service.applyProfile(root.service.activeProfile.id)
+        } else if (b === Qt.MiddleButton) {
+          root.cycle(1)
         } else {
           root.toggle()
         }
       }
+      onWheelMoved: function(delta) { root.cycle(delta < 0 ? 1 : -1) }
     }
   }
 }

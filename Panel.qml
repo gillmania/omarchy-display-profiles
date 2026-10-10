@@ -5,14 +5,14 @@ import qs.Commons
 import qs.Ui
 import "Model.js" as Model
 
-// The Display Profiles panel: a draggable map of the monitors, per-monitor
+// The Display Setups panel: a draggable map of the monitors, per-monitor
 // settings, workspace assignment, and the saved profiles.
 //
 // Edits are made to a draft and only reach Hyprland on Apply or Save, so a
 // half-finished drag never rearranges the screens being looked at.
 Panel {
   id: root
-  moduleName: "io.github.gillmania.display-profiles"
+  moduleName: "io.github.gillmania.display-setups"
   manageIpc: false
 
   property var anchorItem: null
@@ -26,6 +26,8 @@ Panel {
   property var draftWorkspaces: ({})
   // Whether the layout also says which workspaces belong on which display.
   property bool draftDedicated: false
+  // Whether the map and the per-display controls are shown.
+  property bool arranging: false
   property string selectedKey: ""
   property bool dirty: false
   // The topology the draft was made for. Apply and Save hand it to the
@@ -58,7 +60,7 @@ Panel {
 
   function loadDraft() {
     if (!serviceReady) return
-    draft = Model.normalize(JSON.parse(JSON.stringify(service.monitors)))
+    draft = Model.withPolicies(Model.normalize(JSON.parse(JSON.stringify(service.monitors))), activeProfile)
     draftWorkspaces = activeProfile
       ? Model.completeWorkspaces(draft, activeProfile.workspaces)
       : Model.workspacesFromLive(draft, service.workspaces, service.workspaceRules)
@@ -189,6 +191,8 @@ Panel {
   function open() {
     if (service) service.refresh()
     loadDraft()
+    // With a single display there is nothing quick to choose between.
+    if (draft.length < 2 && profiles.length === 0) arranging = true
     root.controller.show()
   }
 
@@ -249,7 +253,7 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      blocked: root.naming || resolutionPicker.popupOpen || ratePicker.popupOpen || mirrorPicker.popupOpen
+      blocked: root.naming || resolutionPicker.popupOpen || ratePicker.popupOpen || mirrorPicker.popupOpen || vrrPicker.popupOpen
       onMoveRequested: function(dx, dy) {
         if (dx !== 0) root.cycleSelection(dx)
         else if (dy !== 0) root.cycleSelection(dy)
@@ -366,8 +370,20 @@ Panel {
             }
           }
 
+          // The panel opens on the short view: the quick choices and the saved
+          // setups. Everything for arranging by hand is behind this button.
+          Button {
+            text: root.arranging ? "󰅁  Done arranging" : "󰍹  Arrange displays…"
+            leftAlign: true
+            width: parent.width
+            foreground: root.fg
+            fontFamily: root.fontFamily
+            onClicked: root.arranging = !root.arranging
+          }
+
           // ---------- Arrangement ----------
           PanelSectionHeader {
+            visible: root.arranging
             text: "ARRANGEMENT"
             foreground: root.fg
             fontFamily: root.fontFamily
@@ -375,6 +391,7 @@ Panel {
 
           Item {
             id: canvas
+            visible: root.arranging
             width: parent.width
             height: Style.space(240)
 
@@ -508,6 +525,7 @@ Panel {
           }
 
           Text {
+            visible: root.arranging
             textFormat: Text.PlainText
             width: parent.width
             text: "Drag a display to where it sits on your desk. The outline shows where it will land. Press i to show each screen its number."
@@ -519,12 +537,14 @@ Panel {
 
           // ---------- Displays ----------
           PanelSectionHeader {
+            visible: root.arranging
             text: "DISPLAYS"
             foreground: root.fg
             fontFamily: root.fontFamily
           }
 
           Column {
+            visible: root.arranging
             width: parent.width
             spacing: Style.space(2)
 
@@ -606,14 +626,14 @@ Panel {
 
           // ---------- Selected display ----------
           PanelSectionHeader {
-            visible: root.selected !== null && root.selected.enabled !== false
+            visible: root.arranging && root.selected !== null && root.selected.enabled !== false
             text: root.selected ? Model.shortName(root.selected).toUpperCase() : ""
             foreground: root.fg
             fontFamily: root.fontFamily
           }
 
           Row {
-            visible: root.selected !== null && root.selected.enabled !== false
+            visible: root.arranging && root.selected !== null && root.selected.enabled !== false
             width: parent.width
             spacing: Style.space(8)
 
@@ -651,8 +671,33 @@ Panel {
           }
 
           Dropdown {
+            id: vrrPicker
+            visible: root.arranging && root.selected !== null && Model.hasDesktop(root.selected)
+            width: parent.width
+            label: "ADAPTIVE SYNC (VRR)"
+            foreground: root.fg
+            fontFamily: root.fontFamily
+            options: Model.VRR_OPTIONS
+            value: root.selected && Model.validVrr(root.selected.vrrPolicy) !== null ? String(root.selected.vrrPolicy) : ""
+            onChanged: function(value) {
+              if (root.selected) root.edit(root.selectedKey, { vrrPolicy: value === "" ? null : Number(value) })
+            }
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            visible: root.arranging && root.selected !== null
+            width: parent.width
+            text: Model.details(root.selected)
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+
+          Dropdown {
             id: mirrorPicker
-            visible: root.selected !== null && root.selected.enabled !== false && options.length > 1
+            visible: root.arranging && root.selected !== null && root.selected.enabled !== false && options.length > 1
             width: parent.width
             label: "SHOWS"
             foreground: root.fg
@@ -674,7 +719,7 @@ Panel {
           }
 
           Flow {
-            visible: root.selected !== null && root.selected.enabled !== false
+            visible: root.arranging && root.selected !== null && root.selected.enabled !== false
             width: parent.width
             spacing: Style.space(6)
 
@@ -713,6 +758,7 @@ Panel {
           }
 
           Button {
+            visible: root.arranging
             text: (root.draftDedicated ? "󰄬  " : "󰅖  ") + "Dedicated workspaces"
             leftAlign: true
             width: parent.width
@@ -723,7 +769,7 @@ Panel {
           }
 
           Flow {
-            visible: root.draftDedicated && root.selected !== null && root.selected.enabled !== false
+            visible: root.arranging && root.draftDedicated && root.selected !== null && root.selected.enabled !== false
             width: parent.width
             spacing: Style.space(6)
 
@@ -757,7 +803,7 @@ Panel {
             }
           }
 
-          PanelSeparator { foreground: root.fg }
+          PanelSeparator { visible: root.arranging; foreground: root.fg }
 
           // ---------- Actions ----------
           Flow {

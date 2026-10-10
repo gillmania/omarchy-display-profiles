@@ -18,7 +18,7 @@ the layout comes back on its own.
   force.
 - **See it in the bar.** Optionally lists the workspaces grouped by display, in
   place of the built-in workspace switcher.
-- **One profile per setup, applied automatically.** A setup is recognised by
+- **Applied automatically.** A setup is recognised by
   the displays connected to it (make, model, and serial number), not by
   connector names such as `DP-7`, which change every time a dock is replugged.
 - **Dock aware.** With a Thunderbolt or USB4 dock, a profile belongs to that
@@ -28,10 +28,11 @@ the layout comes back on its own.
   for the same desk and switch between them from the panel or a key. The one
   you used last is the one that comes back. Useful when monitors are switched
   off at their power button, which a dock usually does not report.
-- **Hard to lock yourself out.** A layout that changes a display's resolution,
-  scale, rotation, or on/off state has to be confirmed within 15 seconds, or
-  the previous layout comes back. Moving displays around needs no
-  confirmation.
+- **Hard to lock yourself out.** A layout you have just edited that changes a
+  display's resolution, scale, rotation, or on/off state has to be confirmed
+  within 15 seconds, or the previous layout comes back. Moving displays
+  around needs no confirmation, and neither does a saved profile: it was
+  confirmed when it was made, so it is applied as it is.
 - **Scale, rotation, and on/off** per display. Only scales the display's mode
   can actually run at are offered.
 - **Leaves your configuration alone.** Nothing under `~/.config/hypr` is ever
@@ -51,7 +52,10 @@ omarchy plugin enable io.github.gillmania.display-profiles --section right
 ```
 
 Requires Omarchy 4 (Quattro) with Hyprland's Lua configuration. There are no
-other dependencies: the plugin only calls `hyprctl`, which Omarchy ships.
+other dependencies: the plugin calls `hyprctl`, and `bash` with the usual
+coreutils (`cat`, `mkdir`, `mktemp`, `mv`, `rm`, `date`) to read and write its
+own profiles file. Omarchy ships all of them. Nothing runs as root and
+nothing is downloaded.
 
 ## Use
 
@@ -163,7 +167,13 @@ again.
 Handing the screens back (no profile for the new setup, the active profile
 deleted, a trial not kept with nothing applied before it, or the plugin being
 disabled) is done with `hyprctl reload`, which restores exactly what your
-configuration says.
+configuration says. If the deleted profile was one of several for the setup
+and automatic applying is on, another of them takes over instead.
+
+A profile without dedicated workspaces leaves your own workspace rules in
+force. When it follows a layout that had dedicated workspaces, the plugin
+reloads the Hyprland configuration first and then arranges the displays,
+because that is the only way to get your own rules back.
 
 Two things follow from working at runtime, and are worth knowing:
 

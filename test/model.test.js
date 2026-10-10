@@ -577,3 +577,35 @@ test("without dedicated workspaces a profile only arranges the displays", () => 
   assert.equal(Model.validProfile(old).dedicated, true)
   assert.match(Model.buildApplyLua(old, monitors, "owner1").lua, /workspace_rule/)
 })
+
+test("a display dragged past the end of a row stays where it was dropped", () => {
+  const square = (name, x) => ({ name, make: "M", model: "X", serial: name, width: 1000, height: 1000, x })
+  const row = Model.parseMonitors(hyprMonitors([square("A", 0), square("B", 1000), square("C", 2000)]))
+  const spot = Model.landing(row, row[1].key, 3000, 0, 0)
+  assert.deepEqual(spot, { x: 3000, y: 0 })
+  const placed = Model.place(row, row[1].key, 3000, 0, 0)
+  const order = placed.slice().sort((a, b) => a.x - b.x).map((m) => m.name)
+  assert.deepEqual(order, ["A", "C", "B"])
+  assert.deepEqual(placed.map((m) => m.x).sort((a, b) => a - b), [0, 1000, 2000])
+})
+
+test("a drop never leaves displays joined by a sliver", () => {
+  const square = (name, x) => ({ name, make: "M", model: "X", serial: name, width: 1000, height: 1000, x })
+  const pair = Model.parseMonitors(hyprMonitors([square("A", 0), square("B", 1000)]))
+  const spot = Model.landing(pair, pair[1].key, 1000, 999, 0)
+  const shared = Math.min(1000, spot.y + 1000) - Math.max(0, spot.y)
+  const sharedX = Math.min(1000, spot.x + 1000) - Math.max(0, spot.x)
+  assert.ok(Math.max(shared, sharedX) >= 200, JSON.stringify(spot))
+})
+
+test("only a layout with dedicated workspaces marks its rules in Hyprland", () => {
+  const monitors = docked()
+  const withRules = Model.buildApplyLua(Model.makeProfile("p1", "A", monitors, {}, null, true), monitors, "o")
+  const plain = Model.buildApplyLua(Model.makeProfile("p2", "B", monitors, {}, null, false), monitors, "o")
+  assert.equal(withRules.plain, false)
+  assert.equal(plain.plain, true)
+  assert.ok(withRules.lua.indexOf("__display_profiles_has_rules = true") < withRules.lua.indexOf("hl.workspace_rule"))
+  assert.doesNotMatch(plain.lua, /has_rules/)
+  assert.match(Model.RULES_CHECK, new RegExp(Model.RULES_MARK))
+  assert.match(Model.buildReleaseLua("o"), /__display_profiles_has_rules = nil/)
+})

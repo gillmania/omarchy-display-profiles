@@ -88,10 +88,12 @@ Item {
   // it is kept only if the user says so in time. The countdown starts once the
   // layout has actually gone in (`confirmArmed`); until then it can be neither
   // kept nor reverted by hand.
-  // True while workspace rules from a layout with dedicated workspaces are in
-  // Hyprland, and the layout waiting for the reload that clears them.
-  property bool rulesInForce: false
-  property var afterReload: null
+  // Set once a bar has brought the panel back for the confirmation at hand,
+  // so that it happens once however many bars there are.
+  property bool confirmPrompted: false
+  // A config reload done by an apply (see startApply) whose event has not
+  // arrived yet. That event is not news and must not be acted on.
+  property bool ownReloadPending: false
 
   readonly property int confirmTimeout: 15
   property bool confirmPending: false
@@ -156,17 +158,7 @@ Item {
 
     // A pending confirmation was about screens that are no longer the ones
     // connected, or about settings a config reload has just thrown away.
-    // A reload this service asked for, to clear its workspace rules, carries
-    // the layout that goes in after it.
-    var planned = null
-    if (reason === "reload") {
-      planned = root.afterReload
-      root.afterReload = null
-      root.rulesInForce = false
-      if (planned && planned.topology !== root.topology) planned = null
-    }
-    var interrupted = root.confirmPending
-      && ((reason === "reload" && !planned) || root.topology !== root.confirmTopology)
+    var interrupted = root.confirmPending && (reason === "reload" || root.topology !== root.confirmTopology)
     if (interrupted) {
       root.pendingApply = null
       endConfirmation(false, false, "The displays changed, so the new layout was not kept.")
@@ -179,11 +171,7 @@ Item {
 
     var due = reason === "startup" || reason === "reload" || interrupted
       || (reason === "hotplug" && root.topology !== root.reconciledTopology)
-    if (planned && !interrupted) {
-      root.reconciledTopology = root.topology
-      root.pendingApply = null
-      startApply(planned.layout, planned.kind)
-    } else if (due) {
+    if (due) {
       reconcile(reason)
     } else if (root.pendingApply && !applyProc.busy) {
       var waiting = root.pendingApply
@@ -211,7 +199,6 @@ Item {
   // instance ("" for any) has a layout in force. See Model.buildReleaseLua.
   function release(instance) {
     root.standing = null
-    root.rulesInForce = false
     Quickshell.execDetached(["hyprctl", "eval", Model.buildReleaseLua(instance)])
   }
 
@@ -222,16 +209,8 @@ Item {
       root.pendingApply = { layout: layout, kind: kind, topology: root.topology }
       return true
     }
-    // Workspace rules set earlier replaced the user's own in place, and only
-    // a config reload brings those back. So a layout without dedicated
-    // workspaces goes in after a reload when such rules are in force.
-    if (layout.dedicated === false && root.rulesInForce) {
-      root.rulesInForce = false
-      root.afterReload = { layout: layout, kind: kind, topology: root.topology }
-      root.applyState = "running"
-      Quickshell.execDetached(["hyprctl", "reload"])
-      return true
-    }
+    // Starting now supersedes whatever was still waiting its turn.
+    root.pendingApply = null
     var built = Model.buildApplyLua(layout, root.monitors, root.owner)
     if (built.lua === "") {
       root.applyState = "failed"
@@ -240,9 +219,17 @@ Item {
     }
     root.applyNote = built.skipped.length > 0 ? "Not connected: " + built.skipped.join(", ") : ""
     root.applyState = "running"
-    root.applying = { layout: layout, kind: kind, topology: root.topology }
-    // stderr is folded into stdout so one stream carries the whole answer.
-    applyProc.start(["bash", "-c", 'hyprctl eval "$1" 2>&1', "_", built.lua])
+    root.applying = { layout: layout, kind: kind, topology: root.topology, mayReload: built.plain, reloadSeen: false }
+    // Workspace rules set by an earlier layout replaced the user's own in
+    // place, and only a config reload brings those back. A layout without
+    // dedicated workspaces therefore asks Hyprland whether such rules are
+    // there and reloads first if so, all in this one command, so that
+    // nothing else can come in between. stderr is folded into stdout so one
+    // stream carries the whole answer.
+    applyProc.start(["bash", "-c",
+      'if [ "$2" = plain ]; then case "$(hyprctl eval "$3" 2>&1)" in *"$4"*) '
+      + 'hyprctl reload >/dev/null 2>&1; printf "%s\n" "@@RELOADED";; esac; fi; hyprctl eval "$1" 2>&1',
+      "_", built.lua, built.plain ? "plain" : "rules", Model.RULES_CHECK, Model.RULES_MARK])
     return true
   }
 
@@ -284,6 +271,7 @@ Item {
     root.confirmTopology = root.topology
     root.confirmSeconds = root.confirmTimeout
     root.confirmArmed = false
+    root.confirmPrompted = false
     root.confirmPending = true
     return true
   }
@@ -292,6 +280,7 @@ Item {
     confirmTimer.stop()
     root.confirmPending = false
     root.confirmArmed = false
+    root.confirmPrompted = false
     root.trialLayout = null
     root.rollbackLayout = null
     root.pendingSave = null
@@ -462,6 +451,7 @@ Item {
       applyState: root.applyState,
       confirmPending: root.confirmPending,
       confirmArmed: root.confirmArmed,
+      dedicated: root.activeProfile ? root.activeProfile.dedicated !== false : null,
       confirmSeconds: root.confirmSeconds,
       storeWriteError: root.storeWriteError,
       storeState: root.storeState,
@@ -617,9 +607,21 @@ Item {
   Runner {
     id: applyProc
     onDone: function(exitCode, output) {
-      var answer = output.trim()
       var done = root.applying
       root.applying = null
+      // The command reloaded the config itself; the event for that is either
+      // already seen or still on its way. A reload seen while the command ran
+      // without doing one was somebody else's, and is acted on as usual.
+      var reloaded = output.indexOf("@@RELOADED") !== -1
+      var answer = output.replace("@@RELOADED", "").trim()
+      if (done !== null) {
+        if (reloaded && !done.reloadSeen) {
+          root.ownReloadPending = true
+          ownReloadWindow.restart()
+        } else if (!reloaded && done.reloadSeen) {
+          reloadDebounce.restart()
+        }
+      }
       var trial = done !== null && done.kind === "trial" && root.confirmPending
       if (exitCode !== 0 || (answer !== "" && answer !== "ok")) {
         root.applyState = "failed"
@@ -630,11 +632,10 @@ Item {
       } else {
         root.applyState = "ok"
         root.lastError = root.applyNote
-        if (done !== null && done.layout.dedicated !== false) root.rulesInForce = true
         if (trial) {
           root.confirmArmed = true
           confirmTimer.restart()
-        } else if (done !== null && done.kind === "profile") {
+        } else if (done !== null) {
           root.standing = { layout: done.layout, topology: done.topology }
         }
       }
@@ -682,6 +683,12 @@ Item {
     onTriggered: root.probe("reload")
   }
 
+  Timer {
+    id: ownReloadWindow
+    interval: 1500
+    onTriggered: root.ownReloadPending = false
+  }
+
   Connections {
     target: Hyprland
     function onRawEvent(event) {
@@ -690,8 +697,13 @@ Item {
       if (name.indexOf("monitoradded") === 0 || name.indexOf("monitorremoved") === 0)
         hotplugDebounce.restart()
       // A config reload drops everything set through eval, so put it back.
-      else if (name === "configreloaded")
-        reloadDebounce.restart()
+      else if (name === "configreloaded") {
+        // An apply that may reload the config itself expects one such event.
+        var running = applyProc.busy ? root.applying : null
+        if (running && running.mayReload && !running.reloadSeen) running.reloadSeen = true
+        else if (root.ownReloadPending) root.ownReloadPending = false
+        else reloadDebounce.restart()
+      }
     }
   }
 

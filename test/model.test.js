@@ -319,6 +319,8 @@ test("only changes to a monitor's own settings ask for confirmation", () => {
   const scaled = docked()
   scaled[0].scale = 1
   assert.equal(Model.changesMonitors(scaled, live), true)
+  const moved = Model.place(docked(), live[0].key, 2000, 1500, 0)
+  assert.equal(Model.changesMonitors(moved, Model.normalize(live)), false)
 })
 
 test("monitors that report the same identity are kept apart", () => {

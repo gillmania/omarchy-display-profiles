@@ -922,6 +922,8 @@ function matchesLive(profile, monitors, owners, liveWorkspaces) {
 // Would applying `wanted` change any monitor's own settings, as opposed to
 // only moving workspaces? Those are the changes that can leave a screen dark,
 // so they are the ones that ask for confirmation.
+// Moving a screen cannot leave anyone without a picture, so positions are not
+// part of this: only a change that could black a screen out counts.
 function changesMonitors(wanted, monitors) {
   var live = {}
   for (var i = 0; i < (monitors || []).length; i++) live[monitors[i].key] = monitors[i]
@@ -931,7 +933,6 @@ function changesMonitors(wanted, monitors) {
     if (!have) continue
     if ((want.enabled !== false) !== (have.enabled !== false)) return true
     if (want.enabled === false) continue
-    if (want.x !== have.x || want.y !== have.y) return true
     if (want.width !== have.width || want.height !== have.height) return true
     if (Math.abs(num(want.refreshRate, 0) - num(have.refreshRate, 0)) > 0.1) return true
     if (Math.abs(num(want.scale, 1) - num(have.scale, 1)) > 0.011) return true

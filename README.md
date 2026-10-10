@@ -23,8 +23,9 @@ the layout comes back on its own.
   dock. Two desks with identical monitors get a profile each, and saving at
   one dock never replaces the profile of another.
 - **Hard to lock yourself out.** A layout that changes a display's resolution,
-  scale, rotation, position, or on/off state has to be confirmed within 15
-  seconds, or the previous layout comes back.
+  scale, rotation, or on/off state has to be confirmed within 15 seconds, or
+  the previous layout comes back. Moving displays around needs no
+  confirmation.
 - **Scale, rotation, and on/off** per display. Only scales the display's mode
   can actually run at are offered.
 - **Leaves your configuration alone.** Nothing under `~/.config/hypr` is ever
@@ -55,11 +56,13 @@ Click the display icon in the bar.
    rotation, and workspaces.
 3. **Apply** tries the arrangement without saving it. **Save as profile…**
    stores it for the displays that are connected right now.
-4. If the layout changed anything about a display itself, the panel asks
+4. If the layout changed a display's scale, rotation, resolution, or on/off
+   state, the panel reopens and asks
    **Keep this layout?** Answer within 15 seconds or you are taken back: to
    the layout that was applied before, or to your own Hyprland configuration
    if none was. A profile being saved is only written once you keep it.
-   Changing only which workspaces go where needs no confirmation. The
+   Moving displays, or changing which workspaces go where, needs no
+   confirmation. The
    countdown starts when the layout has gone in, and a layout cannot be tried
    while every screen is asleep.
 

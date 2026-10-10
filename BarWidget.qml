@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 import Quickshell
+import Quickshell.Hyprland
 import qs.Commons
 import qs.Ui
 
@@ -73,6 +74,27 @@ BarWidget {
     repeat: true
     running: root.service === null
     onTriggered: root.resolveService()
+  }
+
+  // A layout that waits for "Keep this layout?" must not count down unseen.
+  // Applying it rebuilds the bars, which closes the panel, so the panel is
+  // brought back once on the screen that has the focus.
+  readonly property bool confirmWaiting: service !== null && service.confirmArmed === true
+  readonly property bool onFocusedScreen: {
+    var window = root.QsWindow.window
+    var focused = Hyprland.focusedMonitor
+    return window && window.screen && focused ? window.screen.name === focused.name : false
+  }
+  property bool confirmShown: false
+  onConfirmWaitingChanged: if (!confirmWaiting) confirmShown = false
+
+  Timer {
+    interval: 400
+    running: root.confirmWaiting && !root.confirmShown && root.onFocusedScreen && panelLoader.item !== null
+    onTriggered: {
+      root.confirmShown = true
+      if (!root.opened) root.open()
+    }
   }
 
   Loader {

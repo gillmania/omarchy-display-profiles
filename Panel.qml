@@ -1104,7 +1104,7 @@ Panel {
           }
 
           Button {
-            text: (root.serviceReady && root.service.autoApply ? "󰄬  " : "󰅖  ") + "Apply the saved profile automatically when displays change"
+            text: (root.serviceReady && root.service.autoApply ? "󰄬  " : "󰅖  ") + "Apply saved profiles automatically"
             leftAlign: true
             width: parent.width
             foreground: root.fg

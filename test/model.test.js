@@ -218,7 +218,7 @@ test("the apply chunk addresses monitors by their current connector", () => {
   const replugged = Model.parseMonitors(hyprMonitors([LAPTOP, { ...DELL_A, name: "DP-5" }, { ...DELL_B, name: "DP-6" }]))
   const { lua, skipped } = Model.buildApplyLua(profile, replugged)
   assert.deepEqual(skipped, [])
-  assert.match(lua, /hl\.monitor\(\{ output = "DP-5", mode = "2560x1440@60", position = "1536x0", scale = 1, transform = 0 \}\)/)
+  assert.match(lua, /hl\.monitor\(\{ output = "DP-5", mode = "2560x1440@60", scale = 1, transform = 0, disabled = false, position = "1536x0", mirror = "" \}\)/)
   assert.match(lua, /workspace = "5", monitor = "DP-5", default = true/)
   assert.match(lua, /workspace = "6", monitor = "DP-5", default = false/)
   assert.match(lua, /hl\.dsp\.workspace\.move\(\{ workspace = 5, monitor = "DP-5" \}\)/)
@@ -630,4 +630,66 @@ test("resolutions and refresh rates come from the modes a display offers", () =>
   assert.equal(change.refreshRate, 59.94)
   assert.equal(change.scale, Model.cleanScale(1.25, 1920, 1080))
   assert.equal(Model.modeChange(monitor, 3840, 2160).refreshRate, 143.99)
+})
+
+test("quick choices: mirror, extend, external only, laptop only", () => {
+  const monitors = docked()
+  const [laptop, a, b] = monitors.map((m) => m.key)
+  assert.deepEqual(Model.quickChoices(monitors).map((c) => c.id), ["mirror", "extend", "external", "laptop"])
+  assert.deepEqual(Model.quickChoices([monitors[0]]), [])
+  assert.deepEqual(Model.quickChoices([monitors[1], monitors[2]]).map((c) => c.id), ["mirror", "extend"])
+  assert.equal(Model.quickChoiceOf(monitors), "extend")
+
+  const mirror = Model.quickLayout(monitors, "mirror")
+  assert.deepEqual(mirror.map((m) => m.mirror), ["", laptop, laptop])
+  assert.equal(Model.quickChoiceOf(mirror), "mirror")
+  assert.equal(Model.enabledCount(mirror), 1)
+  assert.deepEqual(Model.layoutBounds(mirror), { x: 0, y: 0, width: 1536, height: 864 })
+
+  const external = Model.quickLayout(mirror, "external")
+  assert.equal(Model.quickChoiceOf(external), "external")
+  assert.deepEqual(external.map((m) => m.enabled), [false, true, true])
+  const rects = external.slice(1).map(Model.rectOf)
+  assert.ok(Model.touching(rects[0], rects[1]) && !Model.overlaps(rects[0], rects[1]))
+
+  const only = Model.quickLayout(external, "laptop")
+  assert.equal(Model.quickChoiceOf(only), "laptop")
+  assert.deepEqual(only.map((m) => m.enabled), [true, false, false])
+
+  const back = Model.quickLayout(only, "extend")
+  assert.equal(Model.quickChoiceOf(back), "extend")
+  const all = back.map(Model.rectOf)
+  for (let i = 0; i < 3; i++) for (let j = i + 1; j < 3; j++) assert.ok(!Model.overlaps(all[i], all[j]))
+  assert.equal(Object.keys(Model.connectedKeys(back)).length, 3)
+  assert.equal(Model.quickLayout([monitors[1], monitors[2]], "laptop"), null)
+})
+
+test("a mirror takes no place, owns no workspaces, and is applied after its source", () => {
+  const monitors = docked()
+  const mirror = Model.quickLayout(monitors, "mirror")
+  const profile = Model.makeProfile("p1", "Mirror", mirror, {}, null, true)
+  assert.equal(Model.validProfile(JSON.parse(JSON.stringify(profile))).monitors[1].mirror, monitors[0].key)
+  assert.deepEqual(Object.keys(profile.workspaces).filter((k) => profile.workspaces[k].length > 0), [monitors[0].key])
+
+  const lua = Model.buildApplyLua(profile, monitors, "o").lua
+  assert.match(lua, /output = "DP-7", [^\n]*position = "auto", mirror = "eDP-1"/)
+  assert.ok(lua.indexOf('output = "eDP-1"') < lua.indexOf('output = "DP-7"'))
+  assert.doesNotMatch(lua, /workspace_rule\(\{ workspace = "\d+", monitor = "DP-7"/)
+  // Going back to extend says outright that nothing is mirrored any more.
+  const extend = Model.buildApplyLua(Model.makeProfile("p2", "Extend", monitors, {}, null, true), monitors, "o").lua
+  assert.match(extend, /output = "DP-7", [^\n]*mirror = ""/)
+
+  // Changing what is mirrored has to be confirmed, and a live mirror is recognised.
+  assert.equal(Model.changesMonitors(mirror, monitors), true)
+  const live = Model.parseMonitors(hyprMonitors([LAPTOP, DELL_A, DELL_B]).replace(/"name":"DP-7"/, '"name":"DP-7","mirrorOf":"0","id":1')
+    .replace(/"name":"eDP-1"/, '"name":"eDP-1","id":0'))
+  assert.equal(live[1].mirror, live[0].key)
+
+  // A profile may not mirror a monitor that is off, itself, or another mirror.
+  const bad = JSON.parse(JSON.stringify(profile))
+  bad.monitors[0].enabled = false
+  assert.equal(Model.validProfile(bad), null)
+  const chain = JSON.parse(JSON.stringify(profile))
+  chain.monitors[2].mirror = chain.monitors[1].key
+  assert.equal(Model.validProfile(chain), null)
 })

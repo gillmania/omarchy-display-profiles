@@ -93,6 +93,13 @@ Item {
   property bool confirmPrompted: false
   // How many times the layout on trial has been looked for and not found.
   property int verifyTries: 0
+  // Whether the layout on trial changed a setting that is only undone by a
+  // config reload.
+  property bool trialPolicies: false
+  // The layout that knows the settings Hyprland does not report back
+  // (adaptive sync): the one that stands, kept or applied, before the saved
+  // profile, which may be older.
+  readonly property var policySource: standing && standing.topology === topology ? standing.layout : activeProfile
   // A config reload done by an apply (see startApply) whose event has not
   // arrived yet. That event is not news and must not be acted on.
   property bool ownReloadPending: false
@@ -119,11 +126,14 @@ Item {
   // Set when the bar should bring the panel up for a setup that is new; the
   // bar on the focused screen clears it.
   property bool chooserWanted: false
+  // True when it was asked for by hand (the `choose` call), which opens the
+  // panel even with automatic opening switched off.
+  property bool chooserAsked: false
 
   // Mirror, extend, external only or laptop only, for what is connected now.
   function quickChoice(choice) {
     if (!root.ready) return false
-    var layout = Model.quickLayout(Model.withPolicies(root.monitors, root.activeProfile), choice)
+    var layout = Model.quickLayout(Model.withPolicies(root.monitors, root.policySource), choice)
     if (!layout || Model.enabledCount(layout) < 1) {
       root.lastError = "That choice does not fit the displays that are connected."
       return false
@@ -242,7 +252,7 @@ Item {
     } else if (root.pendingApply && !applyProc.busy) {
       var waiting = root.pendingApply
       root.pendingApply = null
-      startApply(waiting.layout, waiting.kind)
+      startApply(waiting.layout, waiting.kind, waiting.reloadFirst)
     }
   }
 
@@ -270,9 +280,12 @@ Item {
 
   // ---- Applying ----
 
-  function startApply(layout, kind) {
+  // `reloadFirst` puts the user's own configuration back before the layout
+  // goes in. It is how a setting is undone that a layout can set but not
+  // unset (adaptive sync), when going back from a trial that changed it.
+  function startApply(layout, kind, reloadFirst) {
     if (applyProc.busy) {
-      root.pendingApply = { layout: layout, kind: kind, topology: root.topology }
+      root.pendingApply = { layout: layout, kind: kind, topology: root.topology, reloadFirst: reloadFirst === true }
       return true
     }
     // Starting now supersedes whatever was still waiting its turn.
@@ -285,7 +298,7 @@ Item {
     }
     root.applyNote = built.skipped.length > 0 ? "Not connected: " + built.skipped.join(", ") : ""
     root.applyState = "running"
-    root.applying = { layout: layout, kind: kind, topology: root.topology, mayReload: built.plain, reloadSeen: false }
+    root.applying = { layout: layout, kind: kind, topology: root.topology, mayReload: built.plain || reloadFirst === true, reloadSeen: false }
     // Workspace rules set by an earlier layout replaced the user's own in
     // place, and only a config reload brings those back. A layout without
     // dedicated workspaces therefore asks Hyprland whether such rules are
@@ -302,9 +315,10 @@ Item {
       + 'systemd-run --user --quiet --collect --unit="$5" --on-active="$6s" --timer-property=AccuracySec=200ms '
       + '--setenv=HYPRLAND_INSTANCE_SIGNATURE="$HYPRLAND_INSTANCE_SIGNATURE" --setenv=XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" '
       + 'hyprctl reload >/dev/null 2>&1 || { echo "Could not arm the safety timer, so the layout was not tried."; exit 97; }; fi; '
-      + 'if [ "$2" = plain ]; then case "$(hyprctl eval "$3" 2>&1)" in *"$4"*) '
+      + 'if [ "$2" = reload ]; then hyprctl reload >/dev/null 2>&1; printf "%s\n" "@@RELOADED"; '
+      + 'elif [ "$2" = plain ]; then case "$(hyprctl eval "$3" 2>&1)" in *"$4"*) '
       + 'hyprctl reload >/dev/null 2>&1; printf "%s\n" "@@RELOADED";; esac; fi; hyprctl eval "$1" 2>&1',
-      "_", built.lua, built.plain ? "plain" : "rules", Model.RULES_CHECK, Model.RULES_MARK,
+      "_", built.lua, reloadFirst === true ? "reload" : built.plain ? "plain" : "rules", Model.RULES_CHECK, Model.RULES_MARK,
       kind === "trial" ? root.watchdogUnit : "", String(root.confirmTimeout + 15)])
     return true
   }
@@ -332,8 +346,9 @@ Item {
       root.lastError = "Still applying the previous layout. Try again in a moment."
       return false
     }
-    var before = root.standing && root.standing.topology === root.topology ? root.standing.layout.monitors : []
-    if (!Model.changesMonitors(layout.monitors, root.monitors) && !Model.policiesChanged(layout.monitors, before)) {
+    var before = root.policySource ? root.policySource.monitors : []
+    var policies = Model.policiesChanged(layout.monitors, before)
+    if (!Model.changesMonitors(layout.monitors, root.monitors) && !policies) {
       if (toSave && !writeStore(storeWith(toSave))) return false
       return startApply(layout, "profile")
     }
@@ -345,6 +360,7 @@ Item {
     root.trialLayout = layout
     root.rollbackLayout = root.standing && root.standing.topology === root.topology ? root.standing.layout : null
     root.pendingSave = toSave
+    root.trialPolicies = policies
     root.confirmTopology = root.topology
     root.confirmSeconds = root.confirmTimeout
     root.confirmArmed = false
@@ -387,9 +403,10 @@ Item {
   function revertChanges(force) {
     if (!root.confirmPending || (!root.confirmArmed && force !== true)) return false
     var before = root.rollbackLayout
+    var policies = root.trialPolicies
     endConfirmation(false, false, "")
     root.pendingApply = null
-    if (before) startApply(before, "rollback")
+    if (before) startApply(before, "rollback", policies)
     else release(root.owner)
     return true
   }
@@ -432,7 +449,7 @@ Item {
   // otherwise.
   function saveCurrent(name) {
     var target = Model.cleanName(name) === "" && root.activeProfile ? root.activeProfile.id : ""
-    return saveProfile(name, Model.withPolicies(root.monitors, root.activeProfile),
+    return saveProfile(name, Model.withPolicies(root.monitors, root.policySource),
       Model.workspacesFromLive(root.monitors, root.workspaces, root.workspaceRules), root.topology, target,
       root.activeProfile ? root.activeProfile.dedicated !== false : true)
   }
@@ -623,7 +640,12 @@ Item {
 
   // What was set through eval outlives this object. When the plugin is
   // disabled or removed, the user's own configuration takes over again.
-  Component.onDestruction: Quickshell.execDetached(["hyprctl", "eval", Model.buildReleaseLua(root.owner)])
+  Component.onDestruction: {
+    // Going away hands the screens back now, so a timer still armed for a
+    // trial has nothing left to do and must not reload a second time later.
+    if (root.confirmPending) root.disarmWatchdog()
+    Quickshell.execDetached(["hyprctl", "eval", Model.buildReleaseLua(root.owner)])
+  }
 
   Runner {
     id: readProc
@@ -806,7 +828,7 @@ Item {
     function quick(choice: string): string {
       return root.quickChoice(choice) ? "applying " + choice : "not applied: " + root.lastError
     }
-    function choose(): void { root.chooserWanted = true }
+    function choose(): void { root.chooserAsked = true; root.chooserWanted = true }
     function list(): string {
       return root.profiles.map(function(p) { return p.id + "\t" + p.name }).join("\n")
     }

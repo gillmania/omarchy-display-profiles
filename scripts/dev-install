@@ -15,7 +15,7 @@ if [[ -d $target/.git ]]; then
 fi
 
 mkdir -p "$target"
-cp manifest.json Model.js Service.qml BarWidget.qml WorkspaceStrip.qml Panel.qml IdentifyOverlay.qml README.md LICENSE "$target/"
+cp manifest.json Model.js Service.qml BarWidget.qml WorkspaceStrip.qml Panel.qml IdentifyOverlay.qml README.md LICENSE NOTICE.md "$target/"
 omarchy plugin validate "$target"
 omarchy-shell shell rescanPlugins >/dev/null 2>&1 || true
 echo "Installed to $target"

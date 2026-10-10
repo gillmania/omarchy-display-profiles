@@ -37,8 +37,9 @@ recognised, so two desks with identical monitors are told apart.
   you used last is the one that comes back. Useful when monitors are switched
   off at their power button, which a dock usually does not report.
 - **Hard to lock yourself out.** A layout you have just edited that changes a
-  display's resolution, scale, rotation, or on/off state has to be confirmed
-  within 15 seconds, or the previous layout comes back. Moving displays
+  display's resolution, refresh rate, scale, rotation, mirroring, adaptive
+  sync, or on/off state has to be confirmed within 15 seconds, or the
+  previous layout comes back. Moving displays
   around needs no confirmation, and neither does a saved profile: it was
   confirmed when it was made, so it is applied as it is.
 - **Scale, rotation, and on/off** per display. Only scales the display's mode
@@ -52,8 +53,8 @@ recognised, so two desks with identical monitors are told apart.
 omarchy plugin add https://github.com/gillmania/omarchy-display-setups.git --enable
 ```
 
-Without `--enable` the plugin is cloned but left off, so you can read the code
-first:
+Without `--enable` you are asked whether to switch it on; say no to read the
+code first, and enable it later with:
 
 ```bash
 omarchy plugin enable io.github.gillmania.display-setups --section right
@@ -79,7 +80,9 @@ The top row of the panel has the four choices you want in that moment:
 - **External only**: the laptop's own screen goes off.
 - **Laptop only**: the other screens go off.
 
-One click tries it, and **Keep** makes it stay. When displays are connected
+One click tries it, and **Keep** makes it stay (a choice that only moves
+screens around, with nothing switched on, off or mirrored, goes in without
+asking). When displays are connected
 that nothing is saved for, the panel opens by itself so the choices are right
 there (switch that off with `omarchy bar set
 io.github.gillmania.display-setups openOnNewDisplay false --json`). Save the
@@ -88,8 +91,10 @@ plugged in. No dock is needed for any of this; one HDMI cable is enough.
 
 ### Arranging
 
-The panel opens on a short view: the quick choices and your saved setups.
-**Arrange displays…** opens the map and the settings of each display.
+The panel has a short view, with the quick choices and your saved setups, and
+**Arrange displays…** opens the map and the settings of each display. It
+stays in the view you left it in, and starts in the arrange view when there is
+a single display and nothing saved yet.
 
 1. Drag the displays in the map to match your desk.
 2. Select a display (click it in the map or in the list) and pick its
@@ -98,8 +103,9 @@ The panel opens on a short view: the quick choices and your saved setups.
    number on every screen, the same number its tile has in the map.
 3. **Apply** tries the arrangement without saving it. **Save as profile…**
    stores it for the displays that are connected right now.
-4. If the layout changed a display's scale, rotation, resolution, mirroring,
-   or on/off state, the panel reopens and asks
+4. If the layout changed a display's resolution, refresh rate, scale,
+   rotation, mirroring, adaptive sync, or on/off state, the panel reopens and
+   asks
    **Keep this layout?** Answer within 15 seconds or you are taken back: to
    the layout that was applied before, or to your own Hyprland configuration
    if none was. A profile being saved is only written once you keep it.
@@ -108,8 +114,8 @@ The panel opens on a short view: the quick choices and your saved setups.
    countdown starts when the layout has gone in, and a layout cannot be tried
    while every screen is asleep. A layout the displays did not actually take
    is taken back at once. And if the shell itself dies while a layout is on
-   trial, a timer outside it reloads your Hyprland configuration after 30
-   seconds, so you are not left with a screen you cannot use.
+   trial, a timer outside it reloads your Hyprland configuration 30 seconds
+   after the trial began, so you are not left with a screen you cannot use.
 
 From then on the profile is applied whenever that set of displays appears, and
 after every Hyprland config reload. Right-click the bar icon to re-apply it by
@@ -177,8 +183,8 @@ omarchy-shell display-setups keep            # answer "Keep this layout?"
 omarchy-shell display-setups revert
 ```
 
-`save` stores the arrangement that is on screen right now, so it never needs
-confirming.
+`save` stores the arrangement that is on screen right now, so it normally
+needs no confirming.
 
 Bind one in `~/.config/hypr/bindings.lua` if you want a key for it:
 
@@ -231,7 +237,10 @@ hand-edited profile file can inject code.
 |---|---|
 | `~/.config/omarchy-display-setups/profiles.json` | Your saved profiles. Plain JSON, safe to back up or sync. |
 
-That is the only file the plugin writes. It is replaced atomically, and never
+The folder follows `$XDG_CONFIG_HOME` if you have set it. Nothing is written
+outside it. Beside the profiles file it can hold a `.profiles.*` temporary
+file for the moment a save takes, and `profiles.json.unreadable-*` copies you
+set aside yourself. The profiles file is replaced atomically, and never
 overwritten if it could not be read: a file that is damaged, or written by a
 newer version of the plugin, is left alone and reported in the panel. From
 there you can set it aside (it is renamed to `profiles.json.unreadable-<date>`,
@@ -253,11 +262,17 @@ omarchy plugin remove io.github.gillmania.display-setups
 
 Disabling or removing the plugin reloads the Hyprland configuration if a
 profile was applied, so your own monitor and workspace settings are in force
-again straight away. Nothing else is left behind. To delete the saved profiles
-as well:
+again straight away, and a safety timer still armed for a layout on trial is
+cancelled. Windows stay on the workspaces they were on; they are not moved
+back to where they were before a profile was applied.
+
+If you let the widget stand in for the built-in workspace switcher, bring that
+one back as described under "Workspaces in the bar".
+
+What is left is the folder with your saved profiles. To delete it as well:
 
 ```bash
-rm -r ~/.config/omarchy-display-setups
+rm -r "${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-display-setups"
 ```
 
 ## Limitations
@@ -290,6 +305,9 @@ omarchy plugin validate .
 qs log -p "$OMARCHY_PATH/shell" --tail 100   # QML errors
 ```
 
+`scripts/dev-install` uses `jq`, `cp`, `dirname` and the `omarchy` commands; the
+CI workflow uses `node`, `jq`, `xargs` and `find`.
+
 All decisions (identity, matching, snapping, the generated Lua) live in
 `Model.js`, which has no dependency on QML and is covered by the tests.
 
@@ -317,5 +335,9 @@ Issues and pull requests are welcome. Before sending a pull request:
 
 ## License
 
-MIT. See [LICENSE](LICENSE). The scale-rounding rule follows Omarchy's
-`omarchy-hyprland-monitor-scaling`.
+MIT. See [LICENSE](LICENSE).
+
+The bar widget and panel are built on the integration pattern of Omarchy's own
+shell plugins (how a widget hosts its panel and forwards open and close), and
+the scale-rounding rule follows Omarchy's `omarchy-hyprland-monitor-scaling`.
+Omarchy is MIT licensed; its notice is kept in [NOTICE.md](NOTICE.md).

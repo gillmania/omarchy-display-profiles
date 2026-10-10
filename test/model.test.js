@@ -723,3 +723,15 @@ test("details show size and density only when the display reports a sane size", 
   assert.equal(Model.details({ name: "HDMI-A-1", make: "", model: "Projector", width: 1920, height: 1080,
                                physicalWidth: 0, physicalHeight: 0 }), "HDMI-A-1 · Projector")
 })
+
+test("a monitor that is on without a mode counts as dark", () => {
+  const raw = JSON.parse(hyprMonitors([LAPTOP, DELL_A, DELL_B]))
+  raw[1].width = 0
+  raw[1].height = 0
+  raw[2].disabled = true
+  raw[2].width = 0
+  raw[2].height = 0
+  const monitors = Model.parseMonitors(JSON.stringify(raw))
+  assert.deepEqual(Model.darkMonitors(monitors).map((m) => m.name), [DELL_A.name])
+  assert.deepEqual(Model.darkMonitors(docked()), [])
+})

@@ -293,6 +293,13 @@ rm -r "${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-display-setups"
 - Omarchy's own Display panel has mirror and laptop-screen switches that write
   to its toggle files. A profile applied here says outright what is mirrored
   and what is on, so it wins while it is applied; use one or the other.
+- A display that is connected but gets no picture (Hyprland reports it as
+  0x0, which happens with some docks after sleep or a replug) cannot be fixed
+  from here. Every rule set for such a display makes Hyprland try all of its
+  modes again and stalls the session for seconds, so automatic applying waits
+  and the panel says which display is dark. Switching to a text console and
+  back (Ctrl+Alt+F3, then Ctrl+Alt+F1 or wherever the session runs) usually
+  brings the picture back, and the profile is then applied within seconds.
 - Workspaces above 10 are left alone.
 - At login the profile is applied a moment after the bar appears, not before.
 

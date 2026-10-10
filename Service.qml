@@ -83,6 +83,23 @@ Item {
   // so a refresh that happens to see the change first cannot swallow it.
   property string reconciledTopology: ""
 
+  // Monitors that are connected but show no picture (see Model.isDark). While
+  // there are any, nothing is applied unasked: `held` remembers that a
+  // reconcile is owed, and darkWatch looks again until the picture is back.
+  readonly property var dark: Model.darkMonitors(monitors)
+  property bool held: false
+  readonly property string darkNotice: {
+    if (dark.length === 0) return ""
+    var names = dark.map(function(m) { return Model.shortName(m) + " (" + m.name + ")" }).join(" and ")
+    var vt = String(Quickshell.env("XDG_VTNR") || "")
+    return names + (dark.length === 1 ? " is" : " are") + " connected but "
+      + (dark.length === 1 ? "shows" : "show") + " no picture."
+      + (held ? " The profile is applied as soon as " + (dark.length === 1 ? "it does." : "they do.") : "")
+      + " Switching to a text console and back (Ctrl+Alt+F3, then "
+      + (vt !== "" ? "Ctrl+Alt+F" + vt : "back again") + ") usually wakes "
+      + (dark.length === 1 ? "it." : "them.")
+  }
+
   // ---- Confirmation ----
   // A layout that changes a monitor's own settings can leave a screen dark, so
   // it is kept only if the user says so in time. The countdown starts once the
@@ -243,11 +260,16 @@ Item {
 
     var due = reason === "startup" || reason === "reload" || interrupted
       || (reason === "hotplug" && root.topology !== root.reconciledTopology)
-    // Displays nothing is saved for have just been plugged in: the bar is
-    // asked to offer the quick choices, once.
-    if (reason === "hotplug" && root.topology !== root.reconciledTopology
-        && !root.activeProfile && root.monitors.length > 1) root.chooserWanted = true
-    if (due) {
+    if (due && root.dark.length > 0) {
+      // Left unreconciled on purpose, so that the next look is due as well.
+      root.reconciledTopology = ""
+      root.pendingApply = null
+      if (!root.held) console.info("display-setups: waiting, no picture on", root.dark.map(function(m) { return m.name }).join(", "))
+      root.held = true
+    } else if (due) {
+      // Displays nothing is saved for have just been plugged in: the bar is
+      // asked to offer the quick choices, once.
+      if (reason === "hotplug" && !root.activeProfile && root.monitors.length > 1) root.chooserWanted = true
       reconcile(reason)
     } else if (root.pendingApply && !applyProc.busy) {
       var waiting = root.pendingApply
@@ -261,6 +283,9 @@ Item {
   function reconcile(reason) {
     root.reconciledTopology = root.topology
     root.pendingApply = null
+    root.held = false
+    console.info("display-setups: reconciling after", reason + ",",
+      root.activeProfile && root.autoApply ? "profile " + root.activeProfile.name : "no profile to apply")
     if (root.activeProfile && root.autoApply) {
       startApply(root.activeProfile, "profile")
     } else if (reason === "startup") {
@@ -296,6 +321,7 @@ Item {
       root.lastError = "Nothing to apply: none of this profile's displays are connected."
       return false
     }
+    console.info("display-setups: applying", kind, layout.name || "(unsaved layout)")
     root.applyNote = built.skipped.length > 0 ? "Not connected: " + built.skipped.join(", ") : ""
     root.applyState = "running"
     root.applying = { layout: layout, kind: kind, topology: root.topology, mayReload: built.plain || reloadFirst === true, reloadSeen: false }
@@ -564,6 +590,8 @@ Item {
       storeState: root.storeState,
       storeError: root.storeError,
       lastError: root.lastError,
+      darkNotice: root.darkNotice,
+      held: root.held,
       workspaceOwners: root.workspaceOwners,
       monitors: root.monitors.map(function(m) {
         return { name: m.name, key: m.key, description: m.description, enabled: m.enabled, mirror: m.mirror,
@@ -739,6 +767,7 @@ Item {
         root.applyState = "failed"
         // A trial that did not go in cleanly is not one to keep.
         if (trial) root.revertChanges(true)
+        console.warn("display-setups: apply failed:", answer !== "" ? answer : "no answer")
         root.lastError = (answer !== "" ? answer : "hyprctl eval failed or timed out.")
           + (trial ? " Going back to the previous layout." : "")
       } else {
@@ -785,7 +814,17 @@ Item {
   // the profile is matched against the complete setup.
   Timer {
     id: hotplugDebounce
-    interval: 1200
+    interval: 2000
+    onTriggered: root.probe("hotplug")
+  }
+
+  // Nothing announces that a dark monitor got its picture back (after a
+  // console switch, say), so look for it while a reconcile is being held.
+  Timer {
+    id: darkWatch
+    interval: 5000
+    repeat: true
+    running: root.held
     onTriggered: root.probe("hotplug")
   }
 

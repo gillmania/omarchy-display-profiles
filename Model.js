@@ -985,6 +985,18 @@ function pasteText(raw, room) {
   return text.slice(0, Math.max(0, Number(room) || 0))
 }
 
+// Replace the characters from `start` up to `end` in a single-line field by
+// `insert`, within `limit` characters in all. Returns the new text and where
+// the cursor goes. The name field does its own editing with this, because a
+// field Qt may edit is also one Qt reads the clipboard for (see Panel.qml).
+function spliceText(text, start, end, insert, limit) {
+  var value = String(text === undefined || text === null ? "" : text)
+  var from = Math.max(0, Math.min(value.length, Math.min(start, end)))
+  var to = Math.max(from, Math.min(value.length, Math.max(start, end)))
+  var added = pasteText(insert, limit - (value.length - (to - from)))
+  return { text: value.slice(0, from) + added + value.slice(to), cursor: from + added.length }
+}
+
 function shorten(text, limit) {
   var value = clean(text)
   return value.length > limit ? value.slice(0, Math.max(1, limit - 1)).trim() + "…" : value
@@ -1515,6 +1527,7 @@ if (typeof module !== "undefined") {
     validProfile: validProfile,
     cleanName: cleanName,
     pasteText: pasteText,
+    spliceText: spliceText,
     NAME_LIMIT: NAME_LIMIT,
     shorten: shorten,
     topology: topology,

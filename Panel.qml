@@ -176,12 +176,8 @@ Panel {
     stdout: StdioCollector { id: clipboardText }
     onExited: {
       if (!root.naming) return
-      var from = nameField.selectionStart
-      var to = nameField.selectionEnd
-      var text = Model.pasteText(clipboardText.text, Model.NAME_LIMIT - (nameField.length - (to - from)))
-      if (text === "") return
-      if (to > from) nameField.remove(from, to)
-      nameField.insert(nameField.cursorPosition, text)
+      if (Model.pasteText(clipboardText.text, 1) === "") return
+      nameField.edit(nameField.selectionStart, nameField.selectionEnd, clipboardText.text)
     }
   }
 
@@ -929,22 +925,49 @@ Panel {
               placeholderText: "Profile name"
               foreground: root.fg
               font.family: root.fontFamily
-              onAccepted: root.confirmNaming()
               Keys.onEscapePressed: root.cancelNaming()
 
-              // Qt's own paste reads the Wayland clipboard inside the shell,
-              // for as long and as much as the program that owns it cares to
-              // send. Every way into it is closed here (the paste shortcuts,
-              // the menu, middle click), and the shortcuts go through
-              // clipboardReader instead.
-              maximumLength: Model.NAME_LIMIT
+              // A field Qt may edit is a field Qt reads the Wayland clipboard
+              // for, inside the shell: when pasting, and on its own whenever
+              // the clipboard changes, to know whether Paste applies. Either
+              // read lasts as long and grows as large as the program owning
+              // the clipboard cares to make it. So the field is read-only to
+              // Qt, which then leaves the clipboard alone, and the editing is
+              // done here: typing, Backspace, Delete, Enter, and a paste that
+              // goes through clipboardReader. Moving, selecting, and copying
+              // are still Qt's.
+              readOnly: true
+              cursorVisible: activeFocus
               ContextMenu.menu: null
+
+              function edit(start, end, insert) {
+                var next = Model.spliceText(text, start, end, insert, Model.NAME_LIMIT)
+                text = next.text
+                cursorPosition = next.cursor
+              }
+
               Keys.onPressed: function(event) {
+                var from = selectionStart
+                var to = selectionEnd
                 if (event.matches(StandardKey.Paste)
                     || (event.key === Qt.Key_Insert && (event.modifiers & Qt.ShiftModifier))) {
-                  event.accepted = true
                   if (!clipboardReader.running) clipboardReader.running = true
+                } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                  root.confirmNaming()
+                } else if (event.key === Qt.Key_Backspace) {
+                  edit(from === to ? from - 1 : from, to, "")
+                } else if (event.key === Qt.Key_Delete) {
+                  edit(from, from === to ? to + 1 : to, "")
+                } else if (event.matches(StandardKey.Cut)) {
+                  copy()
+                  edit(from, to, "")
+                } else if (event.text !== "" && !/[\u0000-\u001f\u007f]/.test(event.text)
+                           && !(event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier))) {
+                  edit(from, to, event.text)
+                } else {
+                  return
                 }
+                event.accepted = true
               }
 
               MouseArea {

@@ -305,11 +305,14 @@ rm -r "${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-display-setups"
   and the panel says which display is dark. Switching to a text console and
   back (Ctrl+Alt+F3, then Ctrl+Alt+F1 or wherever the session runs) usually
   brings the picture back, and the profile is then applied within seconds.
-- Pasting into the profile-name field works with Ctrl+V and Shift+Insert only,
-  and takes at most the first 512 bytes of text from the clipboard. Qt's own
-  paste (including middle click and the right-click menu) is switched off
-  there, because it reads the clipboard inside the shell with no limit on size
-  or time, and a program that never stops sending would freeze the whole bar.
+- The profile-name field does its own editing: typing, Backspace, Delete, cut,
+  copy, and a paste (Ctrl+V or Shift+Insert) that takes at most the first 512
+  bytes of text from the clipboard. To Qt the field is read-only, because Qt
+  reads the clipboard for every field it may edit, inside the shell and with no
+  limit on size or time: when pasting, and on its own whenever the clipboard
+  changes. A program that never stops sending would freeze the whole bar. The
+  price is that there is no undo in that field, no right-click menu, no
+  middle-click paste, and no input method composition.
 - Workspaces above 10 are left alone.
 - At login the profile is applied a moment after the bar appears, not before.
 

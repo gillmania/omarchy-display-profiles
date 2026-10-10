@@ -123,8 +123,10 @@ BarWidget {
       && root.onFocusedScreen && panelLoader.item !== null
     onTriggered: {
       if (root.service.chooserWanted !== true) return
+      var asked = root.service.chooserAsked === true
       root.service.chooserWanted = false
-      if (root.openOnNewDisplay && !root.opened) root.open()
+      root.service.chooserAsked = false
+      if ((asked || root.openOnNewDisplay) && !root.opened) root.open()
     }
   }
 

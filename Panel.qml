@@ -60,7 +60,7 @@ Panel {
 
   function loadDraft() {
     if (!serviceReady) return
-    draft = Model.withPolicies(Model.normalize(JSON.parse(JSON.stringify(service.monitors))), activeProfile)
+    draft = Model.withPolicies(Model.normalize(JSON.parse(JSON.stringify(service.monitors))), service.policySource)
     draftWorkspaces = activeProfile
       ? Model.completeWorkspaces(draft, activeProfile.workspaces)
       : Model.workspacesFromLive(draft, service.workspaces, service.workspaceRules)
@@ -101,7 +101,8 @@ Panel {
   }
 
   function assign(id) {
-    if (confirming || !draftDedicated || !selected || selected.enabled === false) return
+    // A display that is off or mirrors another has no desktop to put them on.
+    if (confirming || !draftDedicated || !Model.hasDesktop(selected)) return
     draftWorkspaces = Model.assignWorkspace(draft, draftWorkspaces, id, selectedKey)
     draftWorkspaces = Model.completeWorkspaces(draft, draftWorkspaces)
     dirty = true
@@ -769,7 +770,7 @@ Panel {
           }
 
           Flow {
-            visible: root.arranging && root.draftDedicated && root.selected !== null && root.selected.enabled !== false
+            visible: root.arranging && root.draftDedicated && Model.hasDesktop(root.selected)
             width: parent.width
             spacing: Style.space(6)
 

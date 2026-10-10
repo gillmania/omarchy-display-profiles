@@ -742,3 +742,13 @@ test("pasted text is flattened and cut to the room left", () => {
   assert.equal(Model.pasteText("abc", 0), "")
   assert.equal(Model.pasteText(null, 5), "")
 })
+
+test("the name field's own editing replaces a range within the limit", () => {
+  assert.deepEqual(Model.spliceText("Home", 4, 4, "!", 48), { text: "Home!", cursor: 5 })
+  assert.deepEqual(Model.spliceText("Home", 0, 4, "Work", 48), { text: "Work", cursor: 4 })
+  assert.deepEqual(Model.spliceText("Home", -1, 0, "", 48), { text: "Home", cursor: 0 })
+  assert.deepEqual(Model.spliceText("Home", 3, 4, "", 48), { text: "Hom", cursor: 3 })
+  assert.deepEqual(Model.spliceText("Home", 4, 5, "", 48), { text: "Home", cursor: 4 })
+  assert.deepEqual(Model.spliceText("abc", 3, 3, "defgh", 5), { text: "abcde", cursor: 5 })
+  assert.deepEqual(Model.spliceText("abc", 1, 2, "x\ny", 48), { text: "ax yc", cursor: 4 })
+})

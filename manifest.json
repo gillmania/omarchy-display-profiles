@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "id": "io.github.gillmania.display-profiles",
-  "name": "Display Profiles",
-  "version": "0.6.0",
+  "id": "io.github.gillmania.display-setups",
+  "name": "Display Setups",
+  "version": "0.7.0",
   "author": "Victor Gillholm",
   "license": "MIT",
-  "description": "Arrange your monitors by dragging them, pin workspaces to each one, and have the layout restored automatically for every dock and desk you plug into.",
+  "description": "Mirror, extend or arrange your displays in a click, set resolution and workspaces per screen, and get the same setup back automatically for every dock, desk and projector you plug into.",
   "kinds": [
     "service",
     "bar-widget"
@@ -15,8 +15,8 @@
     "barWidget": "BarWidget.qml"
   },
   "barWidget": {
-    "displayName": "Display Profiles",
-    "description": "Monitor arrangement and per-dock display profiles",
+    "displayName": "Display Setups",
+    "description": "Display arrangement, quick mirror/extend, and saved setups per dock and desk",
     "category": "System",
     "allowMultiple": false,
     "defaultSection": "right",

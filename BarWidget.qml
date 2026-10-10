@@ -5,7 +5,7 @@ import Quickshell.Hyprland
 import qs.Commons
 import qs.Ui
 
-// Bar button for Display Profiles, and the host for its panel.
+// Bar button for Display Setups, and the host for its panel.
 //
 // Left click opens the arrangement panel. Right click re-applies the profile
 // saved for the setup that is connected right now.
@@ -15,7 +15,7 @@ import qs.Ui
 // the built-in workspace switcher.
 BarWidget {
   id: root
-  moduleName: "io.github.gillmania.display-profiles"
+  moduleName: "io.github.gillmania.display-setups"
 
   // The service is this plugin's own headless half. It can finish loading
   // after the widget does, so it is looked up until it is there.
@@ -33,9 +33,9 @@ BarWidget {
   }
 
   readonly property string statusText: {
-    if (!service || !service.ready) return "Display Profiles"
-    if (!service.activeProfile) return "Display Profiles: this setup is not saved"
-    return "Display Profiles: " + service.activeProfile.name
+    if (!service || !service.ready) return "Display Setups"
+    if (!service.activeProfile) return "Display Setups: this setup is not saved"
+    return "Display Setups: " + service.activeProfile.name
   }
 
   readonly property bool showWorkspaces: {

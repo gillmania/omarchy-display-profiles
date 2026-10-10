@@ -1,4 +1,4 @@
-// Pure logic for Display Profiles: identifying a display setup, matching it to a
+// Pure logic for Display Setups: identifying a display setup, matching it to a
 // saved profile, arranging monitors, and turning a profile into the Lua that
 // Hyprland evaluates. Nothing here touches the system, so it runs under Node
 // for the tests in test/.
@@ -996,7 +996,7 @@ function loadStore(raw, exists) {
     return { status: "corrupt", store: emptyStore(), error: "The profiles file does not hold a profile list." }
   if (typeof parsed.version === "number" && parsed.version > 1)
     return { status: "unsupported", store: emptyStore(),
-             error: "The profiles file was written by a newer version of Display Profiles." }
+             error: "The profiles file was written by a newer version of Display Setups." }
   if (parsed.version !== 1 || !Array.isArray(parsed.profiles))
     return { status: "corrupt", store: emptyStore(), error: "The profiles file does not hold a profile list." }
   var profiles = []
@@ -1328,20 +1328,20 @@ function buildApplyLua(profile, monitors, owner) {
   lines = lines.concat(mirrors).concat(disables)
   // Ownership is recorded before the first change, so that a chunk failing
   // part way through still leaves something for the release to find.
-  lines.unshift('__display_profiles_owner = "' + (SAFE_NAME.test(clean(owner)) ? clean(owner) : "") + '"')
+  lines.unshift('__display_setups_owner = "' + (SAFE_NAME.test(clean(owner)) ? clean(owner) : "") + '"')
 
   // Every apply issues a rule for each of the workspaces 1..WORKSPACE_COUNT,
   // and Hyprland updates an existing rule for the same workspace in place. So
   // nothing has to be switched off first, and repeated applies do not pile up
   // dead rules. The handles are kept only to mark that this plugin has state
   // in Hyprland.
-  lines.push("__display_profiles_rules = {}")
+  lines.push("__display_setups_rules = {}")
   // A profile without dedicated workspaces arranges the displays and leaves
   // the workspaces to the user's own rules. `plain` tells the caller that
   // rules an earlier layout left behind have to be cleared first.
   if (profile.dedicated === false) return { lua: lines.join("\n"), skipped: skipped, plain: true }
   // Set before the first rule, so a chunk failing part way still says so.
-  lines.push("__display_profiles_has_rules = true")
+  lines.push("__display_setups_has_rules = true")
 
   // Workspaces of a monitor that is off or not connected go to the primary
   // rather than being left without a rule.
@@ -1362,7 +1362,7 @@ function buildApplyLua(profile, monitors, owner) {
     for (var w = 0; w < ids.length; w++) {
       var id = Math.round(Number(ids[w]))
       if (!isFinite(id) || id < 1 || id > WORKSPACE_COUNT) continue
-      lines.push('__display_profiles_rules[#__display_profiles_rules + 1] = hl.workspace_rule({ workspace = "'
+      lines.push('__display_setups_rules[#__display_setups_rules + 1] = hl.workspace_rule({ workspace = "'
         + id + '", monitor = "' + target + '", default = ' + (w === 0 ? "true" : "false") + " })")
       moves.push("if hl.get_workspace(" + id + ') then hl.dispatch(hl.dsp.workspace.move({ workspace = '
         + id + ', monitor = "' + target + '" })) end')
@@ -1384,18 +1384,18 @@ function buildApplyLua(profile, monitors, owner) {
 // A chunk that fails, with RULES_MARK in its message, when workspace rules
 // from a layout with dedicated workspaces are in Hyprland. The answer lives in
 // Hyprland's own Lua state, so it is right after a shell restart too.
-var RULES_MARK = "DISPLAY_PROFILES_RULES"
-var RULES_CHECK = 'if __display_profiles_has_rules then error("' + RULES_MARK + '") end'
+var RULES_MARK = "DISPLAY_SETUPS_RULES"
+var RULES_CHECK = 'if __display_setups_has_rules then error("' + RULES_MARK + '") end'
 
 function buildReleaseLua(owner) {
   var token = clean(owner)
   if (token !== "" && !SAFE_NAME.test(token)) return ""
   return [
-    token === "" ? "if __display_profiles_owner ~= nil then"
-                 : 'if __display_profiles_owner == "' + token + '" then',
-    "__display_profiles_rules = nil",
-    "__display_profiles_has_rules = nil",
-    "__display_profiles_owner = nil",
+    token === "" ? "if __display_setups_owner ~= nil then"
+                 : 'if __display_setups_owner == "' + token + '" then',
+    "__display_setups_rules = nil",
+    "__display_setups_has_rules = nil",
+    "__display_setups_owner = nil",
     'hl.exec_cmd("hyprctl reload")',
     "end"
   ].join("\n")

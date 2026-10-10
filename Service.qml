@@ -4,7 +4,7 @@ import Quickshell.Io
 import Quickshell.Hyprland
 import "Model.js" as Model
 
-// Headless half of Display Profiles. It watches which monitors (and which
+// Headless half of Display Setups. It watches which monitors (and which
 // dock) are connected, finds the saved profile for that setup, and applies it.
 //
 // Everything is applied at runtime through `hyprctl eval`; nothing under
@@ -18,7 +18,7 @@ Item {
   property var manifest: null
 
   readonly property string configDir:
-    (Quickshell.env("XDG_CONFIG_HOME") || (Quickshell.env("HOME") + "/.config")) + "/omarchy-display-profiles"
+    (Quickshell.env("XDG_CONFIG_HOME") || (Quickshell.env("HOME") + "/.config")) + "/omarchy-display-setups"
   readonly property string storePath: configDir + "/profiles.json"
 
   // Names this instance in Hyprland's Lua state, so that an older instance
@@ -99,7 +99,7 @@ Item {
 
   readonly property int confirmTimeout: 15
   // The systemd timer that takes a trial back if the shell is gone.
-  readonly property string watchdogUnit: "display-profiles-trial-" + owner
+  readonly property string watchdogUnit: "display-setups-trial-" + owner
 
   function disarmWatchdog() {
     Quickshell.execDetached(["systemctl", "--user", "stop", root.watchdogUnit + ".timer"])
@@ -790,7 +790,7 @@ Item {
   }
 
   IpcHandler {
-    target: "display-profiles"
+    target: "display-setups"
 
     function status(): string { return root.statusJson() }
     function refresh(): void { root.refresh() }

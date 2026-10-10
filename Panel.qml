@@ -5,14 +5,14 @@ import qs.Commons
 import qs.Ui
 import "Model.js" as Model
 
-// The Display Profiles panel: a draggable map of the monitors, per-monitor
+// The Display Setups panel: a draggable map of the monitors, per-monitor
 // settings, workspace assignment, and the saved profiles.
 //
 // Edits are made to a draft and only reach Hyprland on Apply or Save, so a
 // half-finished drag never rearranges the screens being looked at.
 Panel {
   id: root
-  moduleName: "io.github.gillmania.display-profiles"
+  moduleName: "io.github.gillmania.display-setups"
   manageIpc: false
 
   property var anchorItem: null

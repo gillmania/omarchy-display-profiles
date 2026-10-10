@@ -401,11 +401,11 @@ test("screens are switched on before any is switched off, and release is owner-b
   profile.monitors[0].enabled = false
   const lua = Model.buildApplyLua(profile, monitors, "abc123").lua
   assert.ok(lua.indexOf('output = "DP-7", mode') < lua.indexOf("disabled = true"))
-  assert.match(lua, /^__display_profiles_owner = "abc123"\n/)
-  assert.match(Model.buildReleaseLua("abc123"), /^if __display_profiles_owner == "abc123" then/)
+  assert.match(lua, /^__display_setups_owner = "abc123"\n/)
+  assert.match(Model.buildReleaseLua("abc123"), /^if __display_setups_owner == "abc123" then/)
   assert.match(Model.buildReleaseLua("abc123"), /hyprctl reload/)
   assert.equal(Model.buildReleaseLua('x" then os.exit() --'), "")
-  assert.match(Model.buildReleaseLua(), /^if __display_profiles_owner ~= nil then/)
+  assert.match(Model.buildReleaseLua(), /^if __display_setups_owner ~= nil then/)
   // Rules are updated in place, so an apply never has to disable old ones.
   assert.doesNotMatch(lua, /set_enabled/)
   // A null entry in a hand-built layout must not throw.
@@ -604,10 +604,10 @@ test("only a layout with dedicated workspaces marks its rules in Hyprland", () =
   const plain = Model.buildApplyLua(Model.makeProfile("p2", "B", monitors, {}, null, false), monitors, "o")
   assert.equal(withRules.plain, false)
   assert.equal(plain.plain, true)
-  assert.ok(withRules.lua.indexOf("__display_profiles_has_rules = true") < withRules.lua.indexOf("hl.workspace_rule"))
+  assert.ok(withRules.lua.indexOf("__display_setups_has_rules = true") < withRules.lua.indexOf("hl.workspace_rule"))
   assert.doesNotMatch(plain.lua, /has_rules/)
   assert.match(Model.RULES_CHECK, new RegExp(Model.RULES_MARK))
-  assert.match(Model.buildReleaseLua("o"), /__display_profiles_has_rules = nil/)
+  assert.match(Model.buildReleaseLua("o"), /__display_setups_has_rules = nil/)
 })
 
 test("resolutions and refresh rates come from the modes a display offers", () => {

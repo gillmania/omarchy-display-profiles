@@ -33,7 +33,7 @@ Item {
       exclusionMode: ExclusionMode.Ignore
       WlrLayershell.layer: WlrLayer.Overlay
       WlrLayershell.keyboardFocus: WlrKeyboardFocus.None
-      WlrLayershell.namespace: "display-profiles-identify"
+      WlrLayershell.namespace: "display-setups-identify"
       anchors { top: true; left: true }
       margins { top: Style.space(40); left: Style.space(40) }
       implicitWidth: card.width

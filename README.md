@@ -1,12 +1,14 @@
-# Display Profiles
+# Display Setups
 
-An [Omarchy](https://omarchy.org/) shell plugin for arranging monitors and
-remembering the arrangement for every place you plug in.
+An [Omarchy](https://omarchy.org/) shell plugin for your displays: one click
+to mirror or extend when you plug in a projector, drag and drop to arrange
+several monitors, and the same setup back on its own the next time you plug in
+at the same place.
 
-Drag your displays to where they sit on your desk, choose which workspaces live
-on which display, and save it. The next time the same displays are connected
-(at home, at work, at your parents' place, or with nothing plugged in at all)
-the layout comes back on its own.
+It works with a single HDMI cable and with a dock. Every set of displays you
+use (at home, at work, at your parents' place, a meeting room projector, or the
+laptop on its own) can have its own saved setups, and a Thunderbolt dock is
+recognised, so two desks with identical monitors are told apart.
 
 ## Features
 
@@ -45,14 +47,14 @@ the layout comes back on its own.
 ## Install
 
 ```bash
-omarchy plugin add https://github.com/gillmania/omarchy-display-profiles.git --enable
+omarchy plugin add https://github.com/gillmania/omarchy-display-setups.git --enable
 ```
 
 Without `--enable` the plugin is cloned but left off, so you can read the code
 first:
 
 ```bash
-omarchy plugin enable io.github.gillmania.display-profiles --section right
+omarchy plugin enable io.github.gillmania.display-setups --section right
 ```
 
 Requires Omarchy 4 (Quattro) with Hyprland's Lua configuration. There are no
@@ -78,7 +80,7 @@ The top row of the panel has the four choices you want in that moment:
 One click tries it, and **Keep** makes it stay. When displays are connected
 that nothing is saved for, the panel opens by itself so the choices are right
 there (switch that off with `omarchy bar set
-io.github.gillmania.display-profiles openOnNewDisplay false --json`). Save the
+io.github.gillmania.display-setups openOnNewDisplay false --json`). Save the
 result as a profile if you want it back the next time the same screen is
 plugged in. No dock is needed for any of this; one HDMI cable is enough.
 
@@ -121,8 +123,8 @@ share a line under their numbers; the line is strong for the display that bar
 is on and faint for the others. Hover a number for the display's name.
 
 ```bash
-omarchy bar set io.github.gillmania.display-profiles workspaces true --json
-omarchy bar move io.github.gillmania.display-profiles --after omarchy.workspaces
+omarchy bar set io.github.gillmania.display-setups workspaces true --json
+omarchy bar move io.github.gillmania.display-setups --after omarchy.workspaces
 omarchy plugin disable omarchy.workspaces
 ```
 
@@ -130,7 +132,7 @@ To go back:
 
 ```bash
 omarchy plugin enable omarchy.workspaces
-omarchy bar set io.github.gillmania.display-profiles workspaces false --json
+omarchy bar set io.github.gillmania.display-setups workspaces false --json
 ```
 
 ### Keyboard
@@ -150,23 +152,23 @@ omarchy bar set io.github.gillmania.display-profiles workspaces false --json
 
 ### Command line
 
-The service answers on the `display-profiles` IPC target:
+The service answers on the `display-setups` IPC target:
 
 ```bash
-omarchy-shell display-profiles status          # JSON: displays, dock, matched profile
-omarchy-shell display-profiles list            # id<TAB>name per profile
-omarchy-shell display-profiles apply           # re-apply the profile for this setup
-omarchy-shell display-profiles save "Home"     # save the current arrangement as a new profile
-omarchy-shell display-profiles save ""         # save over the profile in use
-omarchy-shell display-profiles use p2          # switch to another profile for this setup
-omarchy-shell display-profiles next            # cycle through the profiles for this setup
-omarchy-shell display-profiles remove p1
-omarchy-shell display-profiles autoApply false
-omarchy-shell display-profiles quick mirror    # or extend, external, laptop
-omarchy-shell display-profiles choose          # open the panel with the quick choices
-omarchy-shell display-profiles identify        # show each screen its number
-omarchy-shell display-profiles keep            # answer "Keep this layout?"
-omarchy-shell display-profiles revert
+omarchy-shell display-setups status          # JSON: displays, dock, matched profile
+omarchy-shell display-setups list            # id<TAB>name per profile
+omarchy-shell display-setups apply           # re-apply the profile for this setup
+omarchy-shell display-setups save "Home"     # save the current arrangement as a new profile
+omarchy-shell display-setups save ""         # save over the profile in use
+omarchy-shell display-setups use p2          # switch to another profile for this setup
+omarchy-shell display-setups next            # cycle through the profiles for this setup
+omarchy-shell display-setups remove p1
+omarchy-shell display-setups autoApply false
+omarchy-shell display-setups quick mirror    # or extend, external, laptop
+omarchy-shell display-setups choose          # open the panel with the quick choices
+omarchy-shell display-setups identify        # show each screen its number
+omarchy-shell display-setups keep            # answer "Keep this layout?"
+omarchy-shell display-setups revert
 ```
 
 `save` stores the arrangement that is on screen right now, so it never needs
@@ -175,8 +177,8 @@ confirming.
 Bind one in `~/.config/hypr/bindings.lua` if you want a key for it:
 
 ```lua
-o.bind("SUPER + CTRL + P", "Apply display profile", "omarchy-shell display-profiles apply")
-o.bind("SUPER + CTRL + O", "Next display profile", "omarchy-shell display-profiles next")
+o.bind("SUPER + CTRL + P", "Apply display profile", "omarchy-shell display-setups apply")
+o.bind("SUPER + CTRL + O", "Next display profile", "omarchy-shell display-setups next")
 ```
 
 ## How it works
@@ -221,7 +223,7 @@ hand-edited profile file can inject code.
 
 | Path | Contents |
 |---|---|
-| `~/.config/omarchy-display-profiles/profiles.json` | Your saved profiles. Plain JSON, safe to back up or sync. |
+| `~/.config/omarchy-display-setups/profiles.json` | Your saved profiles. Plain JSON, safe to back up or sync. |
 
 That is the only file the plugin writes. It is replaced atomically, and never
 overwritten if it could not be read: a file that is damaged, or written by a
@@ -240,7 +242,7 @@ the profile does the job.
 ## Remove
 
 ```bash
-omarchy plugin remove io.github.gillmania.display-profiles
+omarchy plugin remove io.github.gillmania.display-setups
 ```
 
 Disabling or removing the plugin reloads the Hyprland configuration if a
@@ -249,7 +251,7 @@ again straight away. Nothing else is left behind. To delete the saved profiles
 as well:
 
 ```bash
-rm -r ~/.config/omarchy-display-profiles
+rm -r ~/.config/omarchy-display-setups
 ```
 
 ## Limitations
@@ -297,7 +299,7 @@ The plugin builds on the Omarchy shell's plugin API and on Hyprland's Lua
 configuration (`hyprctl eval`, `hl.monitor`, `hl.workspace_rule`). A larger
 update of either can break it. If it does, your own Hyprland configuration
 keeps working as before; please open an issue with your Omarchy and Hyprland
-versions and the output of `omarchy-shell display-profiles status`.
+versions and the output of `omarchy-shell display-setups status`.
 
 ## Contributing
 

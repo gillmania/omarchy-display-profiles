@@ -568,6 +568,69 @@ function sameRate(a, b) {
   return Math.abs(Number(a) - Number(b)) < 0.02
 }
 
+// ---- Adaptive sync and details ----------------------------------------------
+
+// Hyprland's per-monitor VRR setting: 0 off, 1 on, 2 fullscreen only. null
+// means the profile leaves it alone. Hyprland reports whether VRR is active
+// right now, not what it is set to, so the setting lives in the profile only
+// (as `vrr` there, and as `vrrPolicy` on a draft monitor).
+var VRR_OPTIONS = [
+  { value: "", label: "Leave as it is" },
+  { value: "0", label: "Off" },
+  { value: "1", label: "On" },
+  { value: "2", label: "Fullscreen only" }
+]
+
+function validVrr(value) {
+  if (value === undefined || value === null || value === "") return null
+  var n = Number(value)
+  return n === 0 || n === 1 || n === 2 ? n : null
+}
+
+// Carry what only a profile knows over to a draft made from the live monitors.
+function withPolicies(monitors, profile) {
+  var saved = {}
+  for (var i = 0; i < ((profile && profile.monitors) || []).length; i++) saved[profile.monitors[i].key] = profile.monitors[i]
+  var result = []
+  for (var j = 0; j < (monitors || []).length; j++) {
+    var copy = cloneMonitor(monitors[j])
+    copy.vrrPolicy = saved[copy.key] ? validVrr(saved[copy.key].vrr) : null
+    result.push(copy)
+  }
+  return result
+}
+
+// Did a setting change that the live monitors cannot show (adaptive sync)?
+// Such a change can black a screen out too, so it has to be confirmed.
+function policiesChanged(wanted, before) {
+  var saved = {}
+  for (var i = 0; i < (before || []).length; i++) saved[before[i].key] = validVrr(before[i].vrr)
+  for (var j = 0; j < (wanted || []).length; j++) {
+    var now = validVrr(wanted[j].vrr)
+    var was = saved[wanted[j].key]
+    if (now !== (was === undefined ? null : was) && now !== null) return true
+  }
+  return false
+}
+
+// What a display says about itself, for the panel: port, size, density.
+function details(monitor) {
+  if (!monitor) return ""
+  var parts = [monitor.name]
+  var mm = Math.sqrt(Math.pow(Number(monitor.physicalWidth) || 0, 2) + Math.pow(Number(monitor.physicalHeight) || 0, 2))
+  // Projectors and some adapters report no size, or a nonsense one.
+  if (mm >= 150 && mm <= 5000) {
+    var inches = mm / 25.4
+    parts.push((Math.round(inches * 10) / 10) + '"')
+    var pixels = Math.sqrt(Math.pow(Number(monitor.width) || 0, 2) + Math.pow(Number(monitor.height) || 0, 2))
+    if (pixels > 0) parts.push(Math.round(pixels / inches) + " ppi")
+  }
+  var who = [clean(monitor.make), clean(monitor.model)].filter(function(x) { return x !== "" }).join(" ")
+  if (who !== "") parts.push(who)
+  if (clean(monitor.serial) !== "") parts.push("serial " + clean(monitor.serial))
+  return parts.join(" · ")
+}
+
 // ---- Quick choices ----------------------------------------------------------
 
 var QUICK_CHOICES = [
@@ -935,6 +998,7 @@ function validProfile(p) {
     if (m.enabled !== undefined && typeof m.enabled !== "boolean") return null
     if (m.internal !== undefined && typeof m.internal !== "boolean") return null
     if (m.mirror !== undefined && typeof m.mirror !== "string") return null
+    if (m.vrr !== undefined && m.vrr !== null && validVrr(m.vrr) === null) return null
     keys[m.key] = true
     monitors.push({
       key: m.key,
@@ -942,6 +1006,7 @@ function validProfile(p) {
       internal: m.internal === true,
       enabled: m.enabled !== false,
       mirror: m.enabled !== false && m.mirror ? m.mirror : "",
+      vrr: validVrr(m.vrr),
       width: m.width, height: m.height, refreshRate: m.refreshRate,
       x: m.x, y: m.y, scale: m.scale, transform: m.transform
     })
@@ -1022,6 +1087,7 @@ function profileMonitor(monitor) {
     internal: monitor.internal === true,
     enabled: monitor.enabled !== false,
     mirror: monitor.enabled !== false && monitor.mirror ? String(monitor.mirror) : "",
+    vrr: validVrr(monitor.vrrPolicy),
     width: monitor.width,
     height: monitor.height,
     refreshRate: monitor.refreshRate,
@@ -1308,6 +1374,7 @@ function buildApplyLua(profile, monitors, owner) {
     // said stays as it was: "on" and "not a mirror" have to be said outright.
     var settings = 'mode = "' + mode + '", scale = ' + luaNumber(want.scale, 1, 6)
       + ", transform = " + Math.round(num(want.transform, 0)) % 8 + ", disabled = false"
+      + (validVrr(want.vrr) !== null ? ", vrr = " + validVrr(want.vrr) : "")
     var shown = want.mirror ? nameByKey[want.mirror] : ""
     var source = null
     for (var s2 = 0; s2 < profile.monitors.length; s2++)
@@ -1467,6 +1534,11 @@ if (typeof module !== "undefined") {
     quickLayout: quickLayout,
     quickChoiceOf: quickChoiceOf,
     mainMonitor: mainMonitor,
+    VRR_OPTIONS: VRR_OPTIONS,
+    validVrr: validVrr,
+    withPolicies: withPolicies,
+    policiesChanged: policiesChanged,
+    details: details,
     workspaceOwnerNames: workspaceOwnerNames,
     stripIds: stripIds,
     workspaceRuns: workspaceRuns

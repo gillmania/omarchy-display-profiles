@@ -123,7 +123,7 @@ Item {
   // Mirror, extend, external only or laptop only, for what is connected now.
   function quickChoice(choice) {
     if (!root.ready) return false
-    var layout = Model.quickLayout(root.monitors, choice)
+    var layout = Model.quickLayout(Model.withPolicies(root.monitors, root.activeProfile), choice)
     if (!layout || Model.enabledCount(layout) < 1) {
       root.lastError = "That choice does not fit the displays that are connected."
       return false
@@ -332,7 +332,8 @@ Item {
       root.lastError = "Still applying the previous layout. Try again in a moment."
       return false
     }
-    if (!Model.changesMonitors(layout.monitors, root.monitors)) {
+    var before = root.standing && root.standing.topology === root.topology ? root.standing.layout.monitors : []
+    if (!Model.changesMonitors(layout.monitors, root.monitors) && !Model.policiesChanged(layout.monitors, before)) {
       if (toSave && !writeStore(storeWith(toSave))) return false
       return startApply(layout, "profile")
     }
@@ -431,7 +432,7 @@ Item {
   // otherwise.
   function saveCurrent(name) {
     var target = Model.cleanName(name) === "" && root.activeProfile ? root.activeProfile.id : ""
-    return saveProfile(name, root.monitors,
+    return saveProfile(name, Model.withPolicies(root.monitors, root.activeProfile),
       Model.workspacesFromLive(root.monitors, root.workspaces, root.workspaceRules), root.topology, target,
       root.activeProfile ? root.activeProfile.dedicated !== false : true)
   }
@@ -454,13 +455,20 @@ Item {
     return startApply(found, "profile")
   }
 
-  function nextProfile() {
+  // Step through the profiles of the setup that is connected; `step` is 1
+  // for the next one and -1 for the one before.
+  function nextProfile(step) {
     var list = root.setupProfiles
     if (list.length < 2) return false
+    if (applyProc.busy || root.pendingApply) {
+      root.lastError = "Still applying the previous layout. Try again in a moment."
+      return false
+    }
     var index = 0
     for (var i = 0; i < list.length; i++)
       if (root.activeProfile && list[i].id === root.activeProfile.id) index = i
-    return switchProfile(list[(index + 1) % list.length].id)
+    var move = Number(step) < 0 ? -1 : 1
+    return switchProfile(list[(index + move + list.length) % list.length].id)
   }
 
   // ---- Profiles ----
@@ -817,7 +825,11 @@ Item {
     }
     function next(): string {
       if (root.setupProfiles.length < 2) return "no other profile for this setup"
-      return root.nextProfile() ? "switching" : "not switched: " + root.lastError
+      return root.nextProfile(1) ? "switching" : "not switched: " + root.lastError
+    }
+    function previous(): string {
+      if (root.setupProfiles.length < 2) return "no other profile for this setup"
+      return root.nextProfile(-1) ? "switching" : "not switched: " + root.lastError
     }
     function save(name: string): string {
       var id = root.saveCurrent(name)

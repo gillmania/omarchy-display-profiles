@@ -693,3 +693,33 @@ test("a mirror takes no place, owns no workspaces, and is applied after its sour
   chain.monitors[2].mirror = chain.monitors[1].key
   assert.equal(Model.validProfile(chain), null)
 })
+
+test("adaptive sync is a profile setting, applied only when chosen", () => {
+  const monitors = docked()
+  const plain = Model.makeProfile("p1", "A", monitors, {}, null, false)
+  assert.equal(plain.monitors[1].vrr, null)
+  assert.doesNotMatch(Model.buildApplyLua(plain, monitors, "o").lua, /vrr/)
+
+  const draft = Model.withPolicies(monitors, plain)
+  draft[1].vrrPolicy = 2
+  const tuned = Model.makeProfile("p1", "A", draft, {}, null, false)
+  assert.equal(tuned.monitors[1].vrr, 2)
+  assert.match(Model.buildApplyLua(tuned, monitors, "o").lua, /output = "DP-7", [^\n]*vrr = 2/)
+  assert.equal(Model.validProfile(JSON.parse(JSON.stringify(tuned))).monitors[1].vrr, 2)
+  // It comes back into a draft, and changing it has to be confirmed.
+  assert.equal(Model.withPolicies(monitors, tuned)[1].vrrPolicy, 2)
+  assert.equal(Model.policiesChanged(tuned.monitors, plain.monitors), true)
+  assert.equal(Model.policiesChanged(tuned.monitors, tuned.monitors), false)
+  assert.equal(Model.policiesChanged(plain.monitors, []), false)
+  const bad = JSON.parse(JSON.stringify(tuned))
+  bad.monitors[1].vrr = 7
+  assert.equal(Model.validProfile(bad), null)
+})
+
+test("details show size and density only when the display reports a sane size", () => {
+  const dell = { name: "DP-7", make: "Dell Inc.", model: "DELL U2715H", serial: "X1", width: 2560, height: 1440,
+                 physicalWidth: 597, physicalHeight: 336 }
+  assert.equal(Model.details(dell), 'DP-7 · 27" · 109 ppi · Dell Inc. DELL U2715H · serial X1')
+  assert.equal(Model.details({ name: "HDMI-A-1", make: "", model: "Projector", width: 1920, height: 1080,
+                               physicalWidth: 0, physicalHeight: 0 }), "HDMI-A-1 · Projector")
+})

@@ -16,8 +16,10 @@ recognised, so two desks with identical monitors are told apart.
   Dropped displays snap edge to edge, so the layout never has gaps or overlaps.
 - **Mirror, extend, external only, laptop only.** One click for the moment
   you plug in a projector, with or without a dock.
-- **Resolution, refresh rate, and mirroring** per display, and **Identify**
-  to see which screen is which.
+- **Resolution, refresh rate, mirroring, and adaptive sync** per display, and
+  **Identify** to see which screen is which.
+- **Switch from the bar.** Middle click or scroll on the icon steps through
+  the setups saved for what is connected.
 - **Dedicated workspaces, if you want them.** Switch it on for a profile to
   assign workspaces 1–10 to displays, so each screen keeps its own. Left off,
   the profile only arranges the displays and your own workspace rules stay in
@@ -85,6 +87,9 @@ result as a profile if you want it back the next time the same screen is
 plugged in. No dock is needed for any of this; one HDMI cable is enough.
 
 ### Arranging
+
+The panel opens on a short view: the quick choices and your saved setups.
+**Arrange displays…** opens the map and the settings of each display.
 
 1. Drag the displays in the map to match your desk.
 2. Select a display (click it in the map or in the list) and pick its
@@ -162,6 +167,7 @@ omarchy-shell display-setups save "Home"     # save the current arrangement as a
 omarchy-shell display-setups save ""         # save over the profile in use
 omarchy-shell display-setups use p2          # switch to another profile for this setup
 omarchy-shell display-setups next            # cycle through the profiles for this setup
+omarchy-shell display-setups previous
 omarchy-shell display-setups remove p1
 omarchy-shell display-setups autoApply false
 omarchy-shell display-setups quick mirror    # or extend, external, laptop

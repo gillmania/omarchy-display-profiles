@@ -35,7 +35,8 @@ BarWidget {
   readonly property string statusText: {
     if (!service || !service.ready) return "Display Setups"
     if (!service.activeProfile) return "Display Setups: this setup is not saved"
-    return "Display Setups: " + service.activeProfile.name
+    var more = service.setupProfiles && service.setupProfiles.length > 1 ? " (scroll to switch)" : ""
+    return "Display Setups: " + service.activeProfile.name + more
   }
 
   readonly property bool showWorkspaces: {
@@ -97,6 +98,17 @@ BarWidget {
     }
   }
 
+  // Middle click and the wheel step through the profiles saved for what is
+  // connected. One step at a time: a wheel sends many events per notch.
+  function cycle(step) {
+    if (!root.service || cycleGate.running) return
+    if (!root.service.setupProfiles || root.service.setupProfiles.length < 2) return
+    cycleGate.restart()
+    root.service.nextProfile(step)
+  }
+
+  Timer { id: cycleGate; interval: 500 }
+
   // New displays nothing is saved for, or the `choose` call: bring the panel
   // up with its quick choices. `"openOnNewDisplay": false` in the widget's
   // shell.json entry turns the automatic part off.
@@ -155,10 +167,13 @@ BarWidget {
         if (b === Qt.RightButton) {
           if (root.service && root.service.activeProfile)
             root.service.applyProfile(root.service.activeProfile.id)
+        } else if (b === Qt.MiddleButton) {
+          root.cycle(1)
         } else {
           root.toggle()
         }
       }
+      onWheelMoved: function(delta) { root.cycle(delta < 0 ? 1 : -1) }
     }
   }
 }

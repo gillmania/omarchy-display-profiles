@@ -977,6 +977,14 @@ function cleanName(name) {
   return text.length > NAME_LIMIT ? text.slice(0, NAME_LIMIT).trim() : text
 }
 
+// Text from the clipboard, made fit for a single-line field with `room`
+// characters left: no control characters, no line breaks, no more than fits.
+function pasteText(raw, room) {
+  var text = String(raw === undefined || raw === null ? "" : raw)
+    .replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ")
+  return text.slice(0, Math.max(0, Number(room) || 0))
+}
+
 function shorten(text, limit) {
   var value = clean(text)
   return value.length > limit ? value.slice(0, Math.max(1, limit - 1)).trim() + "…" : value
@@ -1506,6 +1514,8 @@ if (typeof module !== "undefined") {
     loadStore: loadStore,
     validProfile: validProfile,
     cleanName: cleanName,
+    pasteText: pasteText,
+    NAME_LIMIT: NAME_LIMIT,
     shorten: shorten,
     topology: topology,
     anyAwake: anyAwake,

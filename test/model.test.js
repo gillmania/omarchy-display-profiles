@@ -735,3 +735,10 @@ test("a monitor that is on without a mode counts as dark", () => {
   assert.deepEqual(Model.darkMonitors(monitors).map((m) => m.name), [DELL_A.name])
   assert.deepEqual(Model.darkMonitors(docked()), [])
 })
+
+test("pasted text is flattened and cut to the room left", () => {
+  assert.equal(Model.pasteText("Home\n desk\t\u0007x", 48), "Home desk x")
+  assert.equal(Model.pasteText("abcdef", 3), "abc")
+  assert.equal(Model.pasteText("abc", 0), "")
+  assert.equal(Model.pasteText(null, 5), "")
+})

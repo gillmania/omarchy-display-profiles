@@ -10,6 +10,10 @@ use (at home, at work, at your parents' place, a meeting room projector, or the
 laptop on its own) can have its own saved setups, and a Thunderbolt dock is
 recognised, so two desks with identical monitors are told apart.
 
+| Quick choices | Arranging |
+| --- | --- |
+| ![The panel with the quick choices Mirror, Extend, External only and Laptop only](docs/quick.png) | ![The arrangement view with two monitors above a laptop and its second screen](preview.png) |
+
 ## Features
 
 - **Drag-and-drop arrangement.** A map of your displays in the bar panel.

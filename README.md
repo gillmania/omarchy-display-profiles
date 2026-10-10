@@ -246,6 +246,24 @@ The shell hot-reloads the bar widget and panel when their files change. The
 running service is kept across a reload, so after editing `Service.qml` or
 `Model.js` run `omarchy restart shell` to load the new code.
 
+## Compatibility
+
+Tested with Omarchy 4.0.4 and Hyprland 0.56.2.
+
+The plugin builds on the Omarchy shell's plugin API and on Hyprland's Lua
+configuration (`hyprctl eval`, `hl.monitor`, `hl.workspace_rule`). A larger
+update of either can break it. If it does, your own Hyprland configuration
+keeps working as before; please open an issue with your Omarchy and Hyprland
+versions and the output of `omarchy-shell display-profiles status`.
+
+## Contributing
+
+Issues and pull requests are welcome. Before sending a pull request:
+
+- run `node --test test/` and `omarchy plugin validate .`
+- keep decisions in `Model.js` and add a test for anything you change there
+- say which Omarchy and Hyprland versions you tried it on
+
 ## License
 
 MIT. See [LICENSE](LICENSE). The scale-rounding rule follows Omarchy's

@@ -4,7 +4,7 @@
 // for the tests in test/.
 
 var WORKSPACE_COUNT = 10
-var SNAP_DISTANCE = 48
+var MIN_SHARED_EDGE = 200
 
 // ---- Identity ---------------------------------------------------------------
 
@@ -220,48 +220,94 @@ function attachPoints(moving, other) {
 // Place the monitor `key` as close to (x, y) as it can go while touching
 // another monitor and overlapping none. Hyprland lays windows out badly on
 // layouts with gaps or overlaps, so a drop always lands on a valid spot.
-function place(monitors, key, x, y) {
-  return reflow(placeOne(monitors, key, x, y))
+// `tolerance` is how far, in layout pixels, the drop is pulled onto a guide.
+function place(monitors, key, x, y, tolerance) {
+  return reflow(placeOne(monitors, key, x, y, tolerance))
 }
 
-function placeOne(monitors, key, x, y) {
+function clamp(value, low, high) {
+  return low > high ? value : Math.max(low, Math.min(high, value))
+}
+
+// Where the monitor `key` would land if dropped at (x, y), in the coordinates
+// of `monitors` as they are. The monitor slides freely along a neighbour's
+// edge, so it can sit anywhere against it and not only at its corners.
+function landing(monitors, key, x, y, tolerance) {
   var moving = null
   var others = []
   for (var i = 0; i < (monitors || []).length; i++) {
-    if (monitors[i].key === key) moving = cloneMonitor(monitors[i])
-    else if (monitors[i].enabled !== false) others.push(monitors[i])
+    if (monitors[i].key === key) moving = monitors[i]
+    else if (monitors[i].enabled !== false) others.push(rectOf(monitors[i]))
   }
-  if (!moving) return monitors
-  moving.x = Math.round(x)
-  moving.y = Math.round(y)
+  if (!moving) return null
+  if (others.length === 0) return { x: Math.round(x), y: Math.round(y) }
 
-  if (others.length > 0) {
-    var best = null
-    var bestDistance = Infinity
-    for (var o = 0; o < others.length; o++) {
-      var points = attachPoints(moving, others[o])
-      for (var p = 0; p < points.length; p++) {
-        var candidate = cloneMonitor(moving)
-        candidate.x = points[p].x
-        candidate.y = points[p].y
-        var rect = rectOf(candidate)
-        var free = true
-        for (var c = 0; c < others.length; c++) {
-          if (overlaps(rect, rectOf(others[c]))) { free = false; break }
-        }
-        if (!free) continue
-        var dx = candidate.x - x
-        var dy = candidate.y - y
-        var distance = dx * dx + dy * dy
-        if (distance < bestDistance) { bestDistance = distance; best = candidate }
+  var size = logicalSize(moving)
+  var want = snap(monitors, key, Math.round(x), Math.round(y), tolerance)
+  var candidates = [{ x: want.x, y: want.y }]
+
+  for (var o = 0; o < others.length; o++) {
+    var r = others[o]
+    // Keep a real stretch of shared edge, never just a corner.
+    var shareX = Math.min(size.width, r.width, MIN_SHARED_EDGE)
+    var shareY = Math.min(size.height, r.height, MIN_SHARED_EDGE)
+    var xLow = r.x - size.width + shareX, xHigh = r.x + r.width - shareX
+    var yLow = r.y - size.height + shareY, yHigh = r.y + r.height - shareY
+    var cx = clamp(want.x, xLow, xHigh)
+    var cy = clamp(want.y, yLow, yHigh)
+    var rows = [r.y - size.height, r.y + r.height]
+    var columns = [r.x - size.width, r.x + r.width]
+    for (var a = 0; a < rows.length; a++) {
+      candidates.push({ x: cx, y: rows[a] })
+      // Slide along the edge until clear of whatever is in the way.
+      for (var b = 0; b < others.length; b++) {
+        var left = others[b].x - size.width, right = others[b].x + others[b].width
+        if (left >= xLow && left <= xHigh) candidates.push({ x: left, y: rows[a] })
+        if (right >= xLow && right <= xHigh) candidates.push({ x: right, y: rows[a] })
       }
     }
-    if (best) moving = best
+    for (var c = 0; c < columns.length; c++) {
+      candidates.push({ x: columns[c], y: cy })
+      for (var d = 0; d < others.length; d++) {
+        var above = others[d].y - size.height, below = others[d].y + others[d].height
+        if (above >= yLow && above <= yHigh) candidates.push({ x: columns[c], y: above })
+        if (below >= yLow && below <= yHigh) candidates.push({ x: columns[c], y: below })
+      }
+    }
+  }
+  for (var m = 0; m < monitors.length; m++) {
+    if (monitors[m].key === key || monitors[m].enabled === false) continue
+    candidates = candidates.concat(attachPoints(moving, monitors[m]))
   }
 
+  var best = null
+  var bestDistance = Infinity
+  for (var p = 0; p < candidates.length; p++) {
+    var rect = { x: candidates[p].x, y: candidates[p].y, width: size.width, height: size.height }
+    var free = true
+    var attached = false
+    for (var q = 0; q < others.length; q++) {
+      if (overlaps(rect, others[q])) { free = false; break }
+      if (touching(rect, others[q])) attached = true
+    }
+    if (!free || !attached) continue
+    var dx = rect.x - want.x
+    var dy = rect.y - want.y
+    var distance = dx * dx + dy * dy
+    if (distance < bestDistance) { bestDistance = distance; best = candidates[p] }
+  }
+  return best || { x: want.x, y: want.y }
+}
+
+function placeOne(monitors, key, x, y, tolerance) {
+  var spot = landing(monitors, key, x, y, tolerance)
+  if (!spot) return monitors
   var result = []
-  for (var r = 0; r < monitors.length; r++)
-    result.push(monitors[r].key === key ? moving : cloneMonitor(monitors[r]))
+  for (var r = 0; r < monitors.length; r++) {
+    var copy = cloneMonitor(monitors[r])
+    if (copy.key === key) { copy.x = spot.x; copy.y = spot.y }
+    result.push(copy)
+  }
   return normalize(result)
 }
 
@@ -330,22 +376,27 @@ function reflow(monitors) {
   return normalize(current)
 }
 
-// Pull a dragged monitor onto a neighbour's edge when it comes close, so the
-// preview shows where the drop will land.
-function snap(monitors, key, x, y) {
+// Pull a position onto the nearest guide within `tolerance`: a neighbour's
+// edges, its middle, or centered on one of its edges. The last one is what
+// centers a laptop under the seam between two monitors.
+function snap(monitors, key, x, y, tolerance) {
   var moving = null
   for (var i = 0; i < (monitors || []).length; i++)
     if (monitors[i].key === key) moving = monitors[i]
-  if (!moving) return { x: x, y: y }
+  var reach = Number(tolerance) > 0 ? Number(tolerance) : 0
+  if (!moving || reach === 0) return { x: x, y: y }
 
   var size = logicalSize(moving)
   var sx = x, sy = y
-  var bestX = SNAP_DISTANCE, bestY = SNAP_DISTANCE
+  var bestX = reach, bestY = reach
   for (var o = 0; o < monitors.length; o++) {
     if (monitors[o].key === key || monitors[o].enabled === false) continue
     var r = rectOf(monitors[o])
-    var xs = [r.x - size.width, r.x + r.width, r.x, r.x + r.width - size.width]
-    var ys = [r.y - size.height, r.y + r.height, r.y, r.y + r.height - size.height]
+    var halfW = Math.round(size.width / 2), halfH = Math.round(size.height / 2)
+    var xs = [r.x - size.width, r.x + r.width, r.x, r.x + r.width - size.width,
+      r.x + Math.round((r.width - size.width) / 2), r.x - halfW, r.x + r.width - halfW]
+    var ys = [r.y - size.height, r.y + r.height, r.y, r.y + r.height - size.height,
+      r.y + Math.round((r.height - size.height) / 2), r.y - halfH, r.y + r.height - halfH]
     for (var a = 0; a < xs.length; a++) {
       var ddx = Math.abs(xs[a] - x)
       if (ddx < bestX) { bestX = ddx; sx = xs[a] }
@@ -1047,6 +1098,7 @@ if (typeof module !== "undefined") {
     exactProfile: exactProfile,
     touching: touching,
     reflow: reflow,
+    landing: landing,
     connectedKeys: connectedKeys,
     changesMonitors: changesMonitors,
     suggestName: suggestName,

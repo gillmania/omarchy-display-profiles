@@ -81,10 +81,10 @@ Panel {
     dirty = true
   }
 
-  function moveTo(key, x, y) {
+  function moveTo(key, x, y, tolerance) {
     // Assigning the draft again snaps a tile dragged meanwhile back in place.
     if (confirming) { draft = draft.slice(); return }
-    draft = Model.place(draft, key, x, y)
+    draft = Model.place(draft, key, x, y, tolerance)
     dirty = true
   }
 
@@ -311,10 +311,16 @@ Panel {
           Item {
             id: canvas
             width: parent.width
-            height: Style.space(200)
+            height: Style.space(240)
 
             readonly property var bounds: Model.layoutBounds(root.draft)
-            readonly property real pad: Style.space(10)
+            // Room around the layout to drag a display above, below or beside
+            // the others.
+            readonly property real pad: Style.space(30)
+            // How far a dragged display is pulled onto a guide, in layout
+            // pixels, and where it would land if dropped now.
+            readonly property real reach: Style.space(8) / Math.max(factor, 0.001)
+            property var ghost: null
             readonly property real factor: {
               if (bounds.width <= 0 || bounds.height <= 0) return 1
               return Math.min((width - pad * 2) / bounds.width, (height - pad * 2) / bounds.height)
@@ -345,7 +351,8 @@ Panel {
                 y: canvas.originY + (rect.y - canvas.bounds.y) * canvas.factor
                 width: Math.max(1, rect.width * canvas.factor - 2)
                 height: Math.max(1, rect.height * canvas.factor - 2)
-                z: dragArea.drag.active ? 2 : (isSelected ? 1 : 0)
+                z: dragArea.drag.active ? 3 : (isSelected ? 1 : 0)
+                opacity: dragArea.drag.active ? 0.6 : 1
                 radius: Style.cornerRadius
                 color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, isSelected ? 0.22 : 0.08)
                 border.width: isSelected ? 2 : 1
@@ -387,22 +394,51 @@ Panel {
                   cursorShape: drag.active ? Qt.ClosedHandCursor : Qt.OpenHandCursor
                   drag.target: tile
                   drag.threshold: 4
+                  drag.minimumX: -tile.width / 2
+                  drag.maximumX: canvas.width - tile.width / 2
+                  drag.minimumY: -tile.height / 2
+                  drag.maximumY: canvas.height - tile.height / 2
+
+                  function layoutX() { return (tile.x - canvas.originX) / canvas.factor + canvas.bounds.x }
+                  function layoutY() { return (tile.y - canvas.originY) / canvas.factor + canvas.bounds.y }
+
                   onPressed: root.selectedKey = tile.modelData.key
-                  onReleased: {
-                    if (!drag.active) return
-                    var lx = (tile.x - canvas.originX) / canvas.factor + canvas.bounds.x
-                    var ly = (tile.y - canvas.originY) / canvas.factor + canvas.bounds.y
-                    root.moveTo(tile.modelData.key, lx, ly)
+                  onPositionChanged: {
+                    if (!drag.active || root.confirming) { canvas.ghost = null; return }
+                    var spot = Model.landing(root.draft, tile.modelData.key, layoutX(), layoutY(), canvas.reach)
+                    canvas.ghost = spot
+                      ? { x: spot.x, y: spot.y, width: tile.rect.width, height: tile.rect.height }
+                      : null
                   }
+                  onReleased: {
+                    canvas.ghost = null
+                    if (!drag.active) return
+                    root.moveTo(tile.modelData.key, layoutX(), layoutY(), canvas.reach)
+                  }
+                  onCanceled: { canvas.ghost = null; root.draft = root.draft.slice() }
                 }
               }
+            }
+
+            // Where the dragged display will land.
+            Rectangle {
+              visible: canvas.ghost !== null
+              z: 2
+              x: canvas.ghost ? canvas.originX + (canvas.ghost.x - canvas.bounds.x) * canvas.factor : 0
+              y: canvas.ghost ? canvas.originY + (canvas.ghost.y - canvas.bounds.y) * canvas.factor : 0
+              width: canvas.ghost ? Math.max(1, canvas.ghost.width * canvas.factor - 2) : 0
+              height: canvas.ghost ? Math.max(1, canvas.ghost.height * canvas.factor - 2) : 0
+              radius: Style.cornerRadius
+              color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.18)
+              border.width: 2
+              border.color: Color.accent
             }
           }
 
           Text {
             textFormat: Text.PlainText
             width: parent.width
-            text: "Drag a display to where it sits on your desk."
+            text: "Drag a display to where it sits on your desk. The outline shows where it will land."
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption

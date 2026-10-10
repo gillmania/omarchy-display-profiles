@@ -494,3 +494,31 @@ test("workspace strip: neighbours on one display form a run, live position wins"
   // Without any owner information everything is one unmarked run.
   assert.deepEqual(Model.workspaceRuns([1, 2], null, null), [{ monitor: "", ids: [1, 2] }])
 })
+
+test("a monitor slides freely along a neighbour's edge", () => {
+  const monitors = docked()
+  const spot = Model.landing(monitors, monitors[0].key, 2000, 1500, 0)
+  assert.deepEqual(spot, { x: 2000, y: 1440 })
+})
+
+test("a drop near the seam between two monitors centers on it", () => {
+  const monitors = docked()
+  const laptop = monitors[0].key
+  const placed = Model.place(monitors, laptop, 4096 - 768 + 30, 1500, 60)
+  const byName = Object.fromEntries(placed.map((m) => [m.name, m]))
+  assert.deepEqual([byName["DP-7"].x, byName["DP-8"].x], [0, 2560])
+  assert.deepEqual([byName["eDP-1"].x, byName["eDP-1"].y], [2560 - 768, 1440])
+})
+
+test("the landing spot never overlaps and always touches a neighbour", () => {
+  const monitors = docked()
+  for (let x = -3000; x <= 8000; x += 517) {
+    for (let y = -2500; y <= 3500; y += 389) {
+      const spot = Model.landing(monitors, monitors[0].key, x, y, 80)
+      const rect = { x: spot.x, y: spot.y, width: 1536, height: 864 }
+      const others = [monitors[1], monitors[2]].map(Model.rectOf)
+      assert.ok(!others.some((o) => Model.overlaps(rect, o)), `overlap at ${x},${y}`)
+      assert.ok(others.some((o) => Model.touching(rect, o)), `loose at ${x},${y}`)
+    }
+  }
+})

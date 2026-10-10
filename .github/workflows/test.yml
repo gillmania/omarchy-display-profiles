@@ -12,7 +12,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: node --test test/
+      - run: node --test
       - name: Manifest is valid JSON with the required fields
         run: jq -e '.schemaVersion == 1 and (.id | startswith("omarchy.") | not) and has("name") and has("version") and has("kinds") and has("entryPoints")' manifest.json
       - name: Entry points exist

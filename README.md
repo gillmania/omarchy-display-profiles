@@ -233,7 +233,7 @@ rm -r ~/.config/omarchy-display-profiles
 ## Develop
 
 ```bash
-node --test test/        # unit tests for Model.js
+node --test        # unit tests for Model.js
 scripts/dev-install      # copy the tree into ~/.config/omarchy/plugins and reload
 omarchy plugin validate .
 qs log -p "$OMARCHY_PATH/shell" --tail 100   # QML errors
@@ -260,7 +260,7 @@ versions and the output of `omarchy-shell display-profiles status`.
 
 Issues and pull requests are welcome. Before sending a pull request:
 
-- run `node --test test/` and `omarchy plugin validate .`
+- run `node --test` and `omarchy plugin validate .`
 - keep decisions in `Model.js` and add a test for anything you change there
 - say which Omarchy and Hyprland versions you tried it on
 

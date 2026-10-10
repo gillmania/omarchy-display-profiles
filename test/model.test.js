@@ -524,3 +524,33 @@ test("the landing spot never overlaps and always touches a neighbour", () => {
     }
   }
 })
+
+test("one setup can hold several profiles, and the chosen one is used", () => {
+  const monitors = docked()
+  const dock = { id: "dock-home", name: "Home" }
+  const print = Model.fingerprint(monitors)
+  const off = docked()
+  off[1].enabled = false
+  off[2].enabled = false
+  let store = Model.emptyStore()
+  store = Model.upsertProfile(store, Model.makeProfile("p1", "All screens", monitors, {}, dock))
+  store = Model.upsertProfile(store, Model.makeProfile("p2", "Laptop only", off, {}, dock))
+  store = Model.upsertProfile(store, Model.makeProfile("p3", "Elsewhere", monitors, {}, { id: "dock-work" }))
+  assert.equal(Model.fingerprint(off), print)
+  assert.deepEqual(Model.setupProfiles(store.profiles, print, dock).map((p) => p.id), ["p1", "p2"])
+  assert.equal(Model.matchProfile(store.profiles, print, dock, store.selected).id, "p1")
+
+  store = Model.selectProfile(store, "p3")
+  store = Model.selectProfile(store, "p2")
+  assert.deepEqual(store.selected, ["p3", "p2"])
+  assert.equal(Model.matchProfile(store.profiles, print, dock, store.selected).id, "p2")
+  store = Model.selectProfile(store, "p1")
+  assert.deepEqual(store.selected, ["p3", "p1"])
+
+  const loaded = Model.loadStore(JSON.stringify(store), true)
+  assert.equal(loaded.status, "ok")
+  assert.deepEqual(loaded.store.selected, ["p3", "p1"])
+  assert.deepEqual(Model.removeProfile(store, "p1").selected, ["p3"])
+  const stale = Model.loadStore(JSON.stringify({ ...store, selected: ["gone", 7, "p3"] }), true)
+  assert.deepEqual(stale.store.selected, ["p3"])
+})

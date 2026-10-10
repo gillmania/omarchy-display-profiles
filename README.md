@@ -22,6 +22,10 @@ the layout comes back on its own.
 - **Dock aware.** With a Thunderbolt or USB4 dock, a profile belongs to that
   dock. Two desks with identical monitors get a profile each, and saving at
   one dock never replaces the profile of another.
+- **Several profiles per setup.** Keep, say, "All screens" and "Laptop only"
+  for the same desk and switch between them from the panel or a key. The one
+  you used last is the one that comes back. Useful when monitors are switched
+  off at their power button, which a dock usually does not report.
 - **Hard to lock yourself out.** A layout that changes a display's resolution,
   scale, rotation, or on/off state has to be confirmed within 15 seconds, or
   the previous layout comes back. Moving displays around needs no
@@ -118,7 +122,10 @@ The service answers on the `display-profiles` IPC target:
 omarchy-shell display-profiles status          # JSON: displays, dock, matched profile
 omarchy-shell display-profiles list            # id<TAB>name per profile
 omarchy-shell display-profiles apply           # re-apply the profile for this setup
-omarchy-shell display-profiles save "Home"     # save the current arrangement
+omarchy-shell display-profiles save "Home"     # save the current arrangement as a new profile
+omarchy-shell display-profiles save ""         # save over the profile in use
+omarchy-shell display-profiles use p2          # switch to another profile for this setup
+omarchy-shell display-profiles next            # cycle through the profiles for this setup
 omarchy-shell display-profiles remove p1
 omarchy-shell display-profiles autoApply false
 omarchy-shell display-profiles keep            # answer "Keep this layout?"
@@ -132,6 +139,7 @@ Bind one in `~/.config/hypr/bindings.lua` if you want a key for it:
 
 ```lua
 o.bind("SUPER + CTRL + P", "Apply display profile", "omarchy-shell display-profiles apply")
+o.bind("SUPER + CTRL + O", "Next display profile", "omarchy-shell display-profiles next")
 ```
 
 ## How it works

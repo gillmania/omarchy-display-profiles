@@ -671,7 +671,7 @@ function workspaceRuns(ids, liveOwners, plannedOwners) {
 // ---- Profiles ---------------------------------------------------------------
 
 function emptyStore() {
-  return { version: 1, autoApply: true, profiles: [] }
+  return { version: 1, autoApply: true, selected: [], profiles: [] }
 }
 
 var NAME_LIMIT = 48
@@ -774,7 +774,11 @@ function loadStore(raw, exists) {
     ids[profile.id] = true
     profiles.push(profile)
   }
-  return { status: "ok", store: { version: 1, autoApply: parsed.autoApply !== false, profiles: profiles }, error: "" }
+  var selected = []
+  if (Array.isArray(parsed.selected))
+    for (var s = 0; s < parsed.selected.length; s++)
+      if (typeof parsed.selected[s] === "string") selected.push(parsed.selected[s])
+  return { status: "ok", store: makeStore({ autoApply: parsed.autoApply !== false }, profiles, selected), error: "" }
 }
 
 function profileMonitor(monitor) {
@@ -827,41 +831,72 @@ function makeProfile(id, name, monitors, workspaces, dock) {
   }
 }
 
-// The profile saved for exactly this setup: the same monitors behind the same
-// dock. A profile from another dock never matches, so the layout of one desk
-// is neither applied at another nor overwritten by saving there.
+function dockIdOf(holder) {
+  return (holder && holder.id) || ""
+}
+
+// The profiles saved for this setup: the same monitors behind the same dock.
+// There can be several (say "all screens" and "laptop only" at one desk). A
+// profile from another dock never counts, so the layout of one desk is
+// neither applied at another nor overwritten by saving there.
 //
-// Two cases cannot be told apart and fall back to the monitors alone: a
-// profile saved without a dock, and a setup whose dock cannot be read right
-// now. With several candidates in that position nothing matches rather than
-// guessing.
-function matchProfile(profiles, print, dock) {
+// Two cases cannot be told apart and fall back to the monitors alone:
+// profiles saved without a dock, and a setup whose dock cannot be read right
+// now. In the second case profiles from different docks would be a guess, so
+// nothing is offered.
+function setupProfiles(profiles, print, dock) {
   var sameSetup = []
   for (var i = 0; i < (profiles || []).length; i++)
     if (profiles[i].fingerprint === print) sameSetup.push(profiles[i])
-  if (sameSetup.length === 0) return null
+  if (sameSetup.length === 0) return []
 
-  var dockId = dock && dock.id ? dock.id : ""
-  var dockless = []
+  var dockId = dockIdOf(dock)
+  var exact = [], dockless = []
+  var oneDock = true
   for (var j = 0; j < sameSetup.length; j++) {
-    var savedDock = (sameSetup[j].dock && sameSetup[j].dock.id) || ""
-    if (savedDock === dockId) return sameSetup[j]
+    var savedDock = dockIdOf(sameSetup[j].dock)
+    if (savedDock === dockId) exact.push(sameSetup[j])
     if (savedDock === "") dockless.push(sameSetup[j])
+    if (savedDock !== dockIdOf(sameSetup[0].dock)) oneDock = false
   }
-  if (dockId !== "") return dockless.length === 1 ? dockless[0] : null
-  return sameSetup.length === 1 ? sameSetup[0] : null
+  if (exact.length > 0) return exact
+  if (dockId !== "") return dockless
+  return oneDock ? sameSetup : []
 }
 
-// The profile that is this setup and nothing else: same monitors, same dock
-// (or none on both sides). Saving goes by this, so a profile that only
+// The profile to use for this setup: the one chosen last among its profiles
+// (`selected` lists the chosen profile ids), or the first one saved.
+function matchProfile(profiles, print, dock, selected) {
+  var candidates = setupProfiles(profiles, print, dock)
+  for (var i = 0; i < candidates.length; i++)
+    if ((selected || []).indexOf(candidates[i].id) !== -1) return candidates[i]
+  return candidates.length > 0 ? candidates[0] : null
+}
+
+// The profiles that are this setup and nothing else: same monitors, same dock
+// (or none on both sides). Saving goes by these, so a profile that only
 // matched as a fallback is never overwritten from another desk.
-function exactProfile(profiles, print, dock) {
-  var dockId = dock && dock.id ? dock.id : ""
+function exactProfiles(profiles, print, dock) {
+  var result = []
   for (var i = 0; i < (profiles || []).length; i++) {
     var p = profiles[i]
-    if (p.fingerprint === print && ((p.dock && p.dock.id) || "") === dockId) return p
+    if (p.fingerprint === print && dockIdOf(p.dock) === dockIdOf(dock)) result.push(p)
   }
-  return null
+  return result
+}
+
+function exactProfile(profiles, print, dock) {
+  var all = exactProfiles(profiles, print, dock)
+  return all.length > 0 ? all[0] : null
+}
+
+function makeStore(store, profiles, selected) {
+  var known = {}
+  for (var i = 0; i < profiles.length; i++) known[profiles[i].id] = true
+  var chosen = []
+  for (var j = 0; j < (selected || []).length; j++)
+    if (known[selected[j]] && chosen.indexOf(selected[j]) === -1) chosen.push(selected[j])
+  return { version: 1, autoApply: store.autoApply !== false, selected: chosen, profiles: profiles }
 }
 
 function upsertProfile(store, profile) {
@@ -872,14 +907,34 @@ function upsertProfile(store, profile) {
     else profiles.push(store.profiles[i])
   }
   if (!replaced) profiles.push(profile)
-  return { version: 1, autoApply: store.autoApply !== false, profiles: profiles }
+  return makeStore(store, profiles, store.selected)
 }
 
 function removeProfile(store, id) {
   var profiles = []
   for (var i = 0; i < store.profiles.length; i++)
     if (store.profiles[i].id !== id) profiles.push(store.profiles[i])
-  return { version: 1, autoApply: store.autoApply !== false, profiles: profiles }
+  return makeStore(store, profiles, store.selected)
+}
+
+// Make `id` the chosen profile of its setup. At most one profile per setup
+// (same monitors, same dock) is chosen at a time.
+function selectProfile(store, id) {
+  var target = null
+  for (var i = 0; i < store.profiles.length; i++)
+    if (store.profiles[i].id === id) target = store.profiles[i]
+  if (!target) return store
+  var chosen = []
+  for (var j = 0; j < (store.selected || []).length; j++) {
+    var other = null
+    for (var k = 0; k < store.profiles.length; k++)
+      if (store.profiles[k].id === store.selected[j]) other = store.profiles[k]
+    if (!other || other.id === id) continue
+    if (other.fingerprint === target.fingerprint && dockIdOf(other.dock) === dockIdOf(target.dock)) continue
+    chosen.push(other.id)
+  }
+  chosen.push(id)
+  return makeStore(store, store.profiles, chosen)
 }
 
 // Does the live setup already look like the profile? `owners` maps workspace
@@ -1097,6 +1152,9 @@ if (typeof module !== "undefined") {
     topology: topology,
     anyAwake: anyAwake,
     exactProfile: exactProfile,
+    exactProfiles: exactProfiles,
+    setupProfiles: setupProfiles,
+    selectProfile: selectProfile,
     touching: touching,
     reflow: reflow,
     landing: landing,

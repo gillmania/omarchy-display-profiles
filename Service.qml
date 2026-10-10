@@ -51,9 +51,12 @@ Item {
 
   // The profile to apply here. It may be a fallback (a profile saved without
   // a dock, or the only candidate while the dock cannot be read).
-  readonly property var activeProfile: Model.matchProfile(profiles, fingerprint, dock)
-  // The profile that is exactly this setup; the only one a save may replace.
-  readonly property var ownProfile: Model.exactProfile(profiles, fingerprint, dock)
+  // A setup can have several profiles; the one chosen last is used.
+  readonly property var activeProfile: Model.matchProfile(profiles, fingerprint, dock, store.selected)
+  // Every profile that can be used with what is connected right now.
+  readonly property var setupProfiles: Model.setupProfiles(profiles, fingerprint, dock)
+  // The profiles that are exactly this setup; the only ones a save may replace.
+  readonly property var ownProfiles: Model.exactProfiles(profiles, fingerprint, dock)
   // Set when the last write of the profiles file failed. Kept apart from
   // lastError, which the next apply would otherwise wipe.
   property string storeWriteError: ""
@@ -237,7 +240,7 @@ Item {
       return false
     }
     if (!Model.changesMonitors(layout.monitors, root.monitors)) {
-      if (toSave && !writeStore(Model.upsertProfile(root.store, toSave))) return false
+      if (toSave && !writeStore(storeWith(toSave))) return false
       return startApply(layout, "profile")
     }
     if (!Model.anyAwake(root.monitors)) {
@@ -271,7 +274,7 @@ Item {
     var toSave = root.pendingSave
     root.standing = { layout: root.trialLayout, topology: root.topology }
     // Written before listeners hear about it, so they see the saved profile.
-    var saved = toSave ? writeStore(Model.upsertProfile(root.store, toSave)) : false
+    var saved = toSave ? writeStore(storeWith(toSave)) : false
     endConfirmation(true, saved, "")
     return true
   }
@@ -302,12 +305,20 @@ Item {
     return applyGuarded(Model.makeProfile("draft", "draft", draftMonitors, draftWorkspaces, root.dock), null)
   }
 
-  // Save an arrangement for the setup that is connected right now. It updates
-  // the profile saved for exactly this setup, or creates one. Returns the
+  // A saved profile becomes the chosen one of its setup.
+  function storeWith(profile) {
+    return Model.selectProfile(Model.upsertProfile(root.store, profile), profile.id)
+  }
+
+  // Save an arrangement for the setup that is connected right now. With
+  // `targetId` naming a profile of exactly this setup, that profile is
+  // updated; otherwise a new one is added beside any that exist. Returns the
   // profile id, or "" when nothing was saved or queued.
-  function saveProfile(name, draftMonitors, draftWorkspaces, expectedTopology) {
+  function saveProfile(name, draftMonitors, draftWorkspaces, expectedTopology, targetId) {
     if (!root.ready || !canWrite() || !sameTopology(expectedTopology)) return ""
-    var existing = root.ownProfile
+    var existing = null
+    for (var i = 0; i < root.ownProfiles.length; i++)
+      if (root.ownProfiles[i].id === targetId) existing = root.ownProfiles[i]
     var id = existing ? existing.id : Model.newId(profiles)
     var finalName = Model.cleanName(name)
       || (existing ? existing.name : Model.suggestName(draftMonitors, root.dock, profiles))
@@ -315,9 +326,39 @@ Item {
     return applyGuarded(profile, profile) ? id : ""
   }
 
+  // Saves over the profile in use when no name is given, and as a new profile
+  // otherwise.
   function saveCurrent(name) {
+    var target = Model.cleanName(name) === "" && root.activeProfile ? root.activeProfile.id : ""
     return saveProfile(name, root.monitors,
-      Model.workspacesFromLive(root.monitors, root.workspaces, root.workspaceRules), root.topology)
+      Model.workspacesFromLive(root.monitors, root.workspaces, root.workspaceRules), root.topology, target)
+  }
+
+  // Change to another profile saved for the setup that is connected, and
+  // remember it as the one to use here.
+  function switchProfile(id) {
+    var found = null
+    for (var i = 0; i < root.setupProfiles.length; i++)
+      if (root.setupProfiles[i].id === id) found = root.setupProfiles[i]
+    if (!found) {
+      root.lastError = "That profile was saved for other displays."
+      return false
+    }
+    if (root.confirmPending) {
+      root.lastError = "Keep or go back from the current layout first."
+      return false
+    }
+    if (!canWrite() || !writeStore(Model.selectProfile(root.store, id))) return false
+    return startApply(found, "profile")
+  }
+
+  function nextProfile() {
+    var list = root.setupProfiles
+    if (list.length < 2) return false
+    var index = 0
+    for (var i = 0; i < list.length; i++)
+      if (root.activeProfile && list[i].id === root.activeProfile.id) index = i
+    return switchProfile(list[(index + 1) % list.length].id)
   }
 
   // ---- Profiles ----
@@ -638,6 +679,14 @@ Item {
     function applyId(id: string): string {
       if (!root.findProfile(id)) return "unknown profile"
       return root.applyProfile(id) ? "applying" : "not applied: " + root.lastError
+    }
+    function use(id: string): string {
+      if (!root.findProfile(id)) return "unknown profile"
+      return root.switchProfile(id) ? "switching" : "not switched: " + root.lastError
+    }
+    function next(): string {
+      if (root.setupProfiles.length < 2) return "no other profile for this setup"
+      return root.nextProfile() ? "switching" : "not switched: " + root.lastError
     }
     function save(name: string): string {
       var id = root.saveCurrent(name)

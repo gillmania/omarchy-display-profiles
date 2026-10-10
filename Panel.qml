@@ -113,16 +113,16 @@ Panel {
 
   // Saved at once when only workspaces changed; otherwise the service waits
   // for the layout to be confirmed, and the draft stays unsaved until then.
-  function saveAs(name) {
+  function saveAs(name, targetId) {
     if (!serviceReady || confirming) return
-    var id = service.saveProfile(name, draft, draftWorkspaces, draftTopology)
+    var id = service.saveProfile(name, draft, draftWorkspaces, draftTopology, targetId)
     if (id !== "" && !service.confirmPending) dirty = false
   }
 
   function save() {
     if (!serviceReady || confirming) return
     if (!activeProfile) { startNaming("") ; return }
-    saveAs("")
+    saveAs("", activeProfile.id)
   }
 
   function startNaming(profileId) {
@@ -138,7 +138,7 @@ Panel {
   function confirmNaming() {
     if (!naming) return
     if (renamingId !== "") service.renameProfile(renamingId, nameField.text)
-    else saveAs(nameField.text)
+    else saveAs(nameField.text, "")
     cancelNaming()
   }
 
@@ -636,6 +636,16 @@ Panel {
             }
 
             Button {
+              visible: root.activeProfile !== null
+              text: "Save as new…"
+              bordered: true
+              foreground: root.fg
+              fontFamily: root.fontFamily
+              tooltipText: "Keep another profile for these same displays, such as one with some of them off"
+              onClicked: root.startNaming("")
+            }
+
+            Button {
               visible: root.dirty
               text: "Discard changes"
               bordered: true
@@ -794,6 +804,11 @@ Panel {
                 id: profileRow
                 required property var modelData
                 readonly property bool isActive: root.activeProfile !== null && root.activeProfile.id === modelData.id
+                readonly property bool usable: {
+                  var list = root.serviceReady ? root.service.setupProfiles : []
+                  for (var i = 0; i < list.length; i++) if (list[i].id === modelData.id) return true
+                  return false
+                }
                 width: parent.width
                 height: Math.max(profileLabels.implicitHeight, deleteButton.implicitHeight) + Style.space(10)
                 foreground: root.fg
@@ -803,7 +818,7 @@ Panel {
                   id: profileLabels
                   anchors.left: parent.left
                   anchors.leftMargin: Style.space(8)
-                  anchors.right: renameButton.left
+                  anchors.right: useButton.visible ? useButton.left : renameButton.left
                   anchors.rightMargin: Style.space(8)
                   anchors.verticalCenter: parent.verticalCenter
                   spacing: Style.space(1)
@@ -821,7 +836,7 @@ Panel {
                   Text {
                     textFormat: Text.PlainText
                     width: parent.width
-                    text: (profileRow.isActive ? "connected now · " : "")
+                    text: (profileRow.isActive ? "in use · " : profileRow.usable ? "for these displays · " : "")
                       + profileRow.modelData.monitors.length
                       + (profileRow.modelData.monitors.length === 1 ? " display" : " displays")
                       + (profileRow.modelData.dock ? " · " + profileRow.modelData.dock.name : "")
@@ -830,6 +845,20 @@ Panel {
                     font.pixelSize: Style.font.caption
                     elide: Text.ElideRight
                   }
+                }
+
+                Button {
+                  id: useButton
+                  visible: profileRow.usable && !profileRow.isActive
+                  anchors.right: renameButton.left
+                  anchors.rightMargin: Style.space(6)
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: "Use"
+                  bordered: true
+                  selected: true
+                  foreground: root.fg
+                  fontFamily: root.fontFamily
+                  onClicked: if (!root.confirming) root.service.switchProfile(profileRow.modelData.id)
                 }
 
                 Button {

@@ -129,7 +129,8 @@ BarWidget {
     BarIconButton {
       id: button
       bar: root.bar
-      text: "󰍺"
+      // Not the two-monitor glyph: Omarchy's own Display widget uses that.
+      text: "󰨇"
       tooltipText: root.statusText
       onPressed: function(b) {
         if (b === Qt.RightButton) {

@@ -554,3 +554,26 @@ test("one setup can hold several profiles, and the chosen one is used", () => {
   const stale = Model.loadStore(JSON.stringify({ ...store, selected: ["gone", 7, "p3"] }), true)
   assert.deepEqual(stale.store.selected, ["p3"])
 })
+
+test("without dedicated workspaces a profile only arranges the displays", () => {
+  const monitors = docked()
+  const dock = { id: "dock-home", name: "Home" }
+  const plain = Model.makeProfile("p1", "Plain", monitors, { [monitors[0].key]: [1, 2] }, dock, false)
+  assert.equal(plain.dedicated, false)
+  assert.deepEqual(plain.workspaces, {})
+  const lua = Model.buildApplyLua(plain, monitors, "owner1").lua
+  assert.match(lua, /hl\.monitor/)
+  assert.doesNotMatch(lua, /workspace_rule|workspace\.move/)
+  // Where the workspaces happen to be does not make it drift.
+  assert.equal(Model.matchesLive(plain, monitors, { 1: "DP-8" }, [{ id: 1, monitor: "DP-8" }]), true)
+
+  const loaded = Model.loadStore(JSON.stringify(Model.upsertProfile(Model.emptyStore(), plain)), true)
+  assert.equal(loaded.status, "ok")
+  assert.equal(loaded.store.profiles[0].dedicated, false)
+
+  // Profiles written before the setting existed keep their workspaces.
+  const old = Model.makeProfile("p2", "Old", monitors, {}, dock)
+  delete old.dedicated
+  assert.equal(Model.validProfile(old).dedicated, true)
+  assert.match(Model.buildApplyLua(old, monitors, "owner1").lua, /workspace_rule/)
+})

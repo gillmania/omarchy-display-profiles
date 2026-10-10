@@ -88,6 +88,11 @@ Item {
   // it is kept only if the user says so in time. The countdown starts once the
   // layout has actually gone in (`confirmArmed`); until then it can be neither
   // kept nor reverted by hand.
+  // True while workspace rules from a layout with dedicated workspaces are in
+  // Hyprland, and the layout waiting for the reload that clears them.
+  property bool rulesInForce: false
+  property var afterReload: null
+
   readonly property int confirmTimeout: 15
   property bool confirmPending: false
   property bool confirmArmed: false
@@ -151,7 +156,17 @@ Item {
 
     // A pending confirmation was about screens that are no longer the ones
     // connected, or about settings a config reload has just thrown away.
-    var interrupted = root.confirmPending && (reason === "reload" || root.topology !== root.confirmTopology)
+    // A reload this service asked for, to clear its workspace rules, carries
+    // the layout that goes in after it.
+    var planned = null
+    if (reason === "reload") {
+      planned = root.afterReload
+      root.afterReload = null
+      root.rulesInForce = false
+      if (planned && planned.topology !== root.topology) planned = null
+    }
+    var interrupted = root.confirmPending
+      && ((reason === "reload" && !planned) || root.topology !== root.confirmTopology)
     if (interrupted) {
       root.pendingApply = null
       endConfirmation(false, false, "The displays changed, so the new layout was not kept.")
@@ -164,7 +179,11 @@ Item {
 
     var due = reason === "startup" || reason === "reload" || interrupted
       || (reason === "hotplug" && root.topology !== root.reconciledTopology)
-    if (due) {
+    if (planned && !interrupted) {
+      root.reconciledTopology = root.topology
+      root.pendingApply = null
+      startApply(planned.layout, planned.kind)
+    } else if (due) {
       reconcile(reason)
     } else if (root.pendingApply && !applyProc.busy) {
       var waiting = root.pendingApply
@@ -192,6 +211,7 @@ Item {
   // instance ("" for any) has a layout in force. See Model.buildReleaseLua.
   function release(instance) {
     root.standing = null
+    root.rulesInForce = false
     Quickshell.execDetached(["hyprctl", "eval", Model.buildReleaseLua(instance)])
   }
 
@@ -200,6 +220,16 @@ Item {
   function startApply(layout, kind) {
     if (applyProc.busy) {
       root.pendingApply = { layout: layout, kind: kind, topology: root.topology }
+      return true
+    }
+    // Workspace rules set earlier replaced the user's own in place, and only
+    // a config reload brings those back. So a layout without dedicated
+    // workspaces goes in after a reload when such rules are in force.
+    if (layout.dedicated === false && root.rulesInForce) {
+      root.rulesInForce = false
+      root.afterReload = { layout: layout, kind: kind, topology: root.topology }
+      root.applyState = "running"
+      Quickshell.execDetached(["hyprctl", "reload"])
       return true
     }
     var built = Model.buildApplyLua(layout, root.monitors, root.owner)
@@ -300,9 +330,9 @@ Item {
 
   // Try an arrangement without saving it. `expectedTopology` is the topology
   // the draft was made for; a draft for other screens is refused.
-  function applyDraft(draftMonitors, draftWorkspaces, expectedTopology) {
+  function applyDraft(draftMonitors, draftWorkspaces, expectedTopology, dedicated) {
     if (!root.ready || !sameTopology(expectedTopology)) return false
-    return applyGuarded(Model.makeProfile("draft", "draft", draftMonitors, draftWorkspaces, root.dock), null)
+    return applyGuarded(Model.makeProfile("draft", "draft", draftMonitors, draftWorkspaces, root.dock, dedicated), null)
   }
 
   // A saved profile becomes the chosen one of its setup.
@@ -314,7 +344,7 @@ Item {
   // `targetId` naming a profile of exactly this setup, that profile is
   // updated; otherwise a new one is added beside any that exist. Returns the
   // profile id, or "" when nothing was saved or queued.
-  function saveProfile(name, draftMonitors, draftWorkspaces, expectedTopology, targetId) {
+  function saveProfile(name, draftMonitors, draftWorkspaces, expectedTopology, targetId, dedicated) {
     if (!root.ready || !canWrite() || !sameTopology(expectedTopology)) return ""
     var existing = null
     for (var i = 0; i < root.ownProfiles.length; i++)
@@ -322,7 +352,7 @@ Item {
     var id = existing ? existing.id : Model.newId(profiles)
     var finalName = Model.cleanName(name)
       || (existing ? existing.name : Model.suggestName(draftMonitors, root.dock, profiles))
-    var profile = Model.makeProfile(id, finalName, draftMonitors, draftWorkspaces, root.dock)
+    var profile = Model.makeProfile(id, finalName, draftMonitors, draftWorkspaces, root.dock, dedicated)
     return applyGuarded(profile, profile) ? id : ""
   }
 
@@ -331,7 +361,8 @@ Item {
   function saveCurrent(name) {
     var target = Model.cleanName(name) === "" && root.activeProfile ? root.activeProfile.id : ""
     return saveProfile(name, root.monitors,
-      Model.workspacesFromLive(root.monitors, root.workspaces, root.workspaceRules), root.topology, target)
+      Model.workspacesFromLive(root.monitors, root.workspaces, root.workspaceRules), root.topology, target,
+      root.activeProfile ? root.activeProfile.dedicated !== false : true)
   }
 
   // Change to another profile saved for the setup that is connected, and
@@ -599,6 +630,7 @@ Item {
       } else {
         root.applyState = "ok"
         root.lastError = root.applyNote
+        if (done !== null && done.layout.dedicated !== false) root.rulesInForce = true
         if (trial) {
           root.confirmArmed = true
           confirmTimer.restart()

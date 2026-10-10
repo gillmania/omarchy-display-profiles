@@ -742,7 +742,10 @@ function validProfile(p) {
   // The fingerprint is what a profile is matched by; one that does not
   // describe the profile's own monitors would match the wrong setup.
   if (p.fingerprint !== fingerprint(monitors)) return null
-  return { id: p.id, name: cleanName(p.name), fingerprint: p.fingerprint, dock: dock, monitors: monitors, workspaces: workspaces }
+  if (p.dedicated !== undefined && typeof p.dedicated !== "boolean") return null
+  var dedicated = p.dedicated !== false
+  return { id: p.id, name: cleanName(p.name), fingerprint: p.fingerprint, dock: dock,
+           dedicated: dedicated, monitors: monitors, workspaces: dedicated ? workspaces : {} }
 }
 
 // Read the profiles file. `status` says whether the result may ever be written
@@ -818,14 +821,27 @@ function newId(profiles) {
   return "p" + Date.now()
 }
 
-function makeProfile(id, name, monitors, workspaces, dock) {
+// `dedicated` is whether the profile also says which workspaces belong on
+// which display. Without it only the displays themselves are arranged and the
+// workspaces are left to the user's own configuration.
+function makeProfile(id, name, monitors, workspaces, dock, dedicated) {
   var list = []
   for (var i = 0; i < (monitors || []).length; i++) list.push(profileMonitor(monitors[i]))
+  if (dedicated === false) return {
+    id: id,
+    name: cleanName(name),
+    fingerprint: fingerprint(monitors),
+    dock: dock ? { id: dock.id, name: dock.name } : null,
+    dedicated: false,
+    monitors: list,
+    workspaces: {}
+  }
   return {
     id: id,
     name: cleanName(name),
     fingerprint: fingerprint(monitors),
     dock: dock ? { id: dock.id, name: dock.name } : null,
+    dedicated: true,
     monitors: list,
     workspaces: completeWorkspaces(list, workspaces)
   }
@@ -958,7 +974,7 @@ function matchesLive(profile, monitors, owners, liveWorkspaces) {
     if (Math.abs(want.scale - have.scale) > 0.011) return false
     if (want.transform !== have.transform) return false
   }
-  if (owners) {
+  if (owners && profile.dedicated !== false) {
     var wanted = completeWorkspaces(present, profile.workspaces)
     for (var key in wanted) {
       for (var w = 0; w < wanted[key].length; w++)
@@ -1072,6 +1088,9 @@ function buildApplyLua(profile, monitors, owner) {
   // dead rules. The handles are kept only to mark that this plugin has state
   // in Hyprland.
   lines.push("__display_profiles_rules = {}")
+  // A profile without dedicated workspaces arranges the displays and leaves
+  // the workspaces to the user's own rules.
+  if (profile.dedicated === false) return { lua: lines.join("\n"), skipped: skipped }
 
   // Workspaces of a monitor that is off or not connected go to the primary
   // rather than being left without a rule.

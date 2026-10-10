@@ -12,8 +12,10 @@ the layout comes back on its own.
 
 - **Drag-and-drop arrangement.** A map of your displays in the bar panel.
   Dropped displays snap edge to edge, so the layout never has gaps or overlaps.
-- **Workspaces per display.** Assign workspaces 1–10 to displays, so
-  `SUPER+5` always lands on the screen you expect.
+- **Dedicated workspaces, if you want them.** Switch it on for a profile to
+  assign workspaces 1–10 to displays, so each screen keeps its own. Left off,
+  the profile only arranges the displays and your own workspace rules stay in
+  force.
 - **See it in the bar.** Optionally lists the workspaces grouped by display, in
   place of the built-in workspace switcher.
 - **One profile per setup, applied automatically.** A setup is recognised by

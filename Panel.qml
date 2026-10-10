@@ -24,6 +24,8 @@ Panel {
   // ---- Draft ----
   property var draft: []
   property var draftWorkspaces: ({})
+  // Whether the layout also says which workspaces belong on which display.
+  property bool draftDedicated: false
   property string selectedKey: ""
   property bool dirty: false
   // The topology the draft was made for. Apply and Save hand it to the
@@ -60,6 +62,7 @@ Panel {
     draftWorkspaces = activeProfile
       ? Model.completeWorkspaces(draft, activeProfile.workspaces)
       : Model.workspacesFromLive(draft, service.workspaces, service.workspaceRules)
+    draftDedicated = activeProfile ? activeProfile.dedicated !== false : false
     draftTopology = service.topology
     dirty = false
     if (!Model.monitorByKey(draft, selectedKey)) {
@@ -88,8 +91,14 @@ Panel {
     dirty = true
   }
 
+  function setDedicated(on) {
+    if (confirming || draftDedicated === on) return
+    draftDedicated = on
+    dirty = true
+  }
+
   function assign(id) {
-    if (confirming || !selected || selected.enabled === false) return
+    if (confirming || !draftDedicated || !selected || selected.enabled === false) return
     draftWorkspaces = Model.assignWorkspace(draft, draftWorkspaces, id, selectedKey)
     draftWorkspaces = Model.completeWorkspaces(draft, draftWorkspaces)
     dirty = true
@@ -108,14 +117,14 @@ Panel {
 
   function applyDraft() {
     if (!serviceReady || confirming) return
-    service.applyDraft(draft, draftWorkspaces, draftTopology)
+    service.applyDraft(draft, draftWorkspaces, draftTopology, draftDedicated)
   }
 
   // Saved at once when only workspaces changed; otherwise the service waits
   // for the layout to be confirmed, and the draft stays unsaved until then.
   function saveAs(name, targetId) {
     if (!serviceReady || confirming) return
-    var id = service.saveProfile(name, draft, draftWorkspaces, draftTopology, targetId)
+    var id = service.saveProfile(name, draft, draftWorkspaces, draftTopology, targetId, draftDedicated)
     if (id !== "" && !service.confirmPending) dirty = false
   }
 
@@ -258,7 +267,7 @@ Panel {
             Text {
               id: heroIcon
               textFormat: Text.PlainText
-              text: "󰍺"
+              text: "󰨇"
               color: root.fg
               font.family: root.fontFamily
               font.pixelSize: Style.font.display
@@ -344,7 +353,7 @@ Panel {
                 required property var modelData
                 readonly property var rect: Model.rectOf(modelData)
                 readonly property bool isSelected: modelData.key === root.selectedKey
-                readonly property var ids: root.draftWorkspaces[modelData.key] || []
+                readonly property var ids: root.draftDedicated ? (root.draftWorkspaces[modelData.key] || []) : []
 
                 visible: modelData.enabled !== false
                 x: canvas.originX + (rect.x - canvas.bounds.x) * canvas.factor
@@ -500,7 +509,9 @@ Panel {
                     text: displayRow.modelData.enabled === false
                       ? displayRow.modelData.name + " · off"
                       : displayRow.modelData.name + " · " + displayRow.modelData.width + "×" + displayRow.modelData.height
-                        + " · workspaces " + ((root.draftWorkspaces[displayRow.modelData.key] || []).join(" ") || "none")
+                        + (root.draftDedicated
+                          ? " · workspaces " + ((root.draftWorkspaces[displayRow.modelData.key] || []).join(" ") || "none")
+                          : "")
                     color: root.dim
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.caption
@@ -574,8 +585,18 @@ Panel {
             }
           }
 
+          Button {
+            text: (root.draftDedicated ? "󰄬  " : "󰅖  ") + "Dedicated workspaces"
+            leftAlign: true
+            width: parent.width
+            foreground: root.fg
+            fontFamily: root.fontFamily
+            tooltipText: "Keep chosen workspaces on each display. Off, only the displays are arranged."
+            onClicked: root.setDedicated(!root.draftDedicated)
+          }
+
           Flow {
-            visible: root.selected !== null && root.selected.enabled !== false
+            visible: root.draftDedicated && root.selected !== null && root.selected.enabled !== false
             width: parent.width
             spacing: Style.space(6)
 

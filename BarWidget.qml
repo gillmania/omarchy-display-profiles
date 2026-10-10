@@ -97,6 +97,25 @@ BarWidget {
     }
   }
 
+  // New displays nothing is saved for, or the `choose` call: bring the panel
+  // up with its quick choices. `"openOnNewDisplay": false` in the widget's
+  // shell.json entry turns the automatic part off.
+  readonly property bool openOnNewDisplay: {
+    var value = setting("openOnNewDisplay", true)
+    return value !== false && value !== "false"
+  }
+
+  Timer {
+    interval: 700
+    running: root.service !== null && root.service.chooserWanted === true
+      && root.onFocusedScreen && panelLoader.item !== null
+    onTriggered: {
+      if (root.service.chooserWanted !== true) return
+      root.service.chooserWanted = false
+      if (root.openOnNewDisplay && !root.opened) root.open()
+    }
+  }
+
   Loader {
     id: panelLoader
     active: true

@@ -12,6 +12,10 @@ the layout comes back on its own.
 
 - **Drag-and-drop arrangement.** A map of your displays in the bar panel.
   Dropped displays snap edge to edge, so the layout never has gaps or overlaps.
+- **Mirror, extend, external only, laptop only.** One click for the moment
+  you plug in a projector, with or without a dock.
+- **Resolution, refresh rate, and mirroring** per display, and **Identify**
+  to see which screen is which.
 - **Dedicated workspaces, if you want them.** Switch it on for a profile to
   assign workspaces 1–10 to displays, so each screen keeps its own. Left off,
   the profile only arranges the displays and your own workspace rules stay in
@@ -52,7 +56,8 @@ omarchy plugin enable io.github.gillmania.display-profiles --section right
 ```
 
 Requires Omarchy 4 (Quattro) with Hyprland's Lua configuration. There are no
-other dependencies: the plugin calls `hyprctl`, and `bash` with the usual
+other dependencies: the plugin calls `hyprctl`, `systemd-run`/`systemctl --user`
+(for the safety timer while a layout is on trial), and `bash` with the usual
 coreutils (`cat`, `mkdir`, `mktemp`, `mv`, `rm`, `date`) to read and write its
 own profiles file. Omarchy ships all of them. Nothing runs as root and
 nothing is downloaded.
@@ -61,20 +66,43 @@ nothing is downloaded.
 
 Click the display icon in the bar.
 
+### Just plugged in a projector or a second screen?
+
+The top row of the panel has the four choices you want in that moment:
+
+- **Mirror**: the other screens show what the laptop shows.
+- **Extend**: every screen has its own desktop.
+- **External only**: the laptop's own screen goes off.
+- **Laptop only**: the other screens go off.
+
+One click tries it, and **Keep** makes it stay. When displays are connected
+that nothing is saved for, the panel opens by itself so the choices are right
+there (switch that off with `omarchy bar set
+io.github.gillmania.display-profiles openOnNewDisplay false --json`). Save the
+result as a profile if you want it back the next time the same screen is
+plugged in. No dock is needed for any of this; one HDMI cable is enough.
+
+### Arranging
+
 1. Drag the displays in the map to match your desk.
-2. Select a display (click it in the map or in the list) and pick its scale,
-   rotation, and workspaces.
+2. Select a display (click it in the map or in the list) and pick its
+   resolution, refresh rate, scale, rotation, what it shows (its own desktop
+   or a mirror of another display), and its workspaces. **Identify** puts a
+   number on every screen, the same number its tile has in the map.
 3. **Apply** tries the arrangement without saving it. **Save as profile…**
    stores it for the displays that are connected right now.
-4. If the layout changed a display's scale, rotation, resolution, or on/off
-   state, the panel reopens and asks
+4. If the layout changed a display's scale, rotation, resolution, mirroring,
+   or on/off state, the panel reopens and asks
    **Keep this layout?** Answer within 15 seconds or you are taken back: to
    the layout that was applied before, or to your own Hyprland configuration
    if none was. A profile being saved is only written once you keep it.
    Moving displays, or changing which workspaces go where, needs no
    confirmation. The
    countdown starts when the layout has gone in, and a layout cannot be tried
-   while every screen is asleep.
+   while every screen is asleep. A layout the displays did not actually take
+   is taken back at once. And if the shell itself dies while a layout is on
+   trial, a timer outside it reloads your Hyprland configuration after 30
+   seconds, so you are not left with a screen you cannot use.
 
 From then on the profile is applied whenever that set of displays appears, and
 after every Hyprland config reload. Right-click the bar icon to re-apply it by
@@ -134,6 +162,9 @@ omarchy-shell display-profiles use p2          # switch to another profile for t
 omarchy-shell display-profiles next            # cycle through the profiles for this setup
 omarchy-shell display-profiles remove p1
 omarchy-shell display-profiles autoApply false
+omarchy-shell display-profiles quick mirror    # or extend, external, laptop
+omarchy-shell display-profiles choose          # open the panel with the quick choices
+omarchy-shell display-profiles identify        # show each screen its number
 omarchy-shell display-profiles keep            # answer "Keep this layout?"
 omarchy-shell display-profiles revert
 ```
@@ -236,9 +267,9 @@ rm -r ~/.config/omarchy-display-profiles
 - If the shell is restarted or the plugin re-enabled at the very moment an
   older instance is handing the screens back, the profile can be dropped by
   that reload. It is applied again right after when automatic applying is on.
-- The current resolution and refresh rate of each display are kept; there is no
-  mode picker.
-- Mirroring is not managed. Use Omarchy's built-in Display panel for that.
+- Omarchy's own Display panel has mirror and laptop-screen switches that write
+  to its toggle files. A profile applied here says outright what is mirrored
+  and what is on, so it wins while it is applied; use one or the other.
 - Workspaces above 10 are left alone.
 - At login the profile is applied a moment after the bar appears, not before.
 

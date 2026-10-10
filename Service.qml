@@ -91,11 +91,19 @@ Item {
   // Set once a bar has brought the panel back for the confirmation at hand,
   // so that it happens once however many bars there are.
   property bool confirmPrompted: false
+  // How many times the layout on trial has been looked for and not found.
+  property int verifyTries: 0
   // A config reload done by an apply (see startApply) whose event has not
   // arrived yet. That event is not news and must not be acted on.
   property bool ownReloadPending: false
 
   readonly property int confirmTimeout: 15
+  // The systemd timer that takes a trial back if the shell is gone.
+  readonly property string watchdogUnit: "display-profiles-trial-" + owner
+
+  function disarmWatchdog() {
+    Quickshell.execDetached(["systemctl", "--user", "stop", root.watchdogUnit + ".timer"])
+  }
   property bool confirmPending: false
   property bool confirmArmed: false
   property int confirmSeconds: 0
@@ -106,6 +114,45 @@ Item {
   signal confirmationEnded(bool kept, bool saved)
 
   function refresh() { probe("refresh") }
+
+  // ---- Quick choices ----
+  // Set when the bar should bring the panel up for a setup that is new; the
+  // bar on the focused screen clears it.
+  property bool chooserWanted: false
+
+  // Mirror, extend, external only or laptop only, for what is connected now.
+  function quickChoice(choice) {
+    if (!root.ready) return false
+    var layout = Model.quickLayout(root.monitors, choice)
+    if (!layout || Model.enabledCount(layout) < 1) {
+      root.lastError = "That choice does not fit the displays that are connected."
+      return false
+    }
+    return applyDraft(layout, Model.workspacesFromLive(root.monitors, root.workspaces, root.workspaceRules),
+      root.topology, root.activeProfile ? root.activeProfile.dedicated !== false : false)
+  }
+
+  // ---- Identify ----
+  // Shows each screen its number for a few seconds. The badges live in a file
+  // of their own, loaded here so that they exist once however many bars do.
+  property bool identifying: false
+
+  function identify() {
+    root.identifying = true
+    identifyTimer.restart()
+  }
+
+  Timer {
+    id: identifyTimer
+    interval: 3000
+    onTriggered: root.identifying = false
+  }
+
+  Loader {
+    active: root.identifying
+    source: Qt.resolvedUrl("IdentifyOverlay.qml")
+    onLoaded: item.service = root
+  }
 
   // ---- Probing ----
 
@@ -165,12 +212,31 @@ Item {
     }
     if (reason === "reload") root.standing = null
 
+    // A command that went through is not proof: Hyprland can refuse or round
+    // a setting, or hold it back while the screens sleep. A trial that is not
+    // what is on screen after a second look is taken back, so that nothing
+    // can be kept that was never seen.
+    if (reason === "applied" && root.confirmPending && root.confirmArmed && root.trialLayout
+        && !Model.matchesLive(root.trialLayout, root.monitors, null, null)) {
+      if (root.verifyTries < 2) {
+        root.verifyTries += 1
+        settle.restart()
+      } else {
+        revertChanges()
+        root.lastError = "The displays did not take the new layout, so it was taken back."
+      }
+    }
+
     // Last, so that listeners see a complete reading and a settled
     // confirmation state.
     root.generation += 1
 
     var due = reason === "startup" || reason === "reload" || interrupted
       || (reason === "hotplug" && root.topology !== root.reconciledTopology)
+    // Displays nothing is saved for have just been plugged in: the bar is
+    // asked to offer the quick choices, once.
+    if (reason === "hotplug" && root.topology !== root.reconciledTopology
+        && !root.activeProfile && root.monitors.length > 1) root.chooserWanted = true
     if (due) {
       reconcile(reason)
     } else if (root.pendingApply && !applyProc.busy) {
@@ -226,10 +292,20 @@ Item {
     // there and reloads first if so, all in this one command, so that
     // nothing else can come in between. stderr is folded into stdout so one
     // stream carries the whole answer.
+    //
+    // A trial is first given a watchdog outside the shell: a systemd timer
+    // that reloads the Hyprland config, which is the user's own layout. If
+    // the shell dies before the trial is kept or taken back, the screens
+    // still come back. Without the watchdog the trial does not go in.
     applyProc.start(["bash", "-c",
-      'if [ "$2" = plain ]; then case "$(hyprctl eval "$3" 2>&1)" in *"$4"*) '
+      'if [ -n "$5" ]; then systemctl --user stop "$5.timer" >/dev/null 2>&1; '
+      + 'systemd-run --user --quiet --collect --unit="$5" --on-active="$6s" --timer-property=AccuracySec=200ms '
+      + '--setenv=HYPRLAND_INSTANCE_SIGNATURE="$HYPRLAND_INSTANCE_SIGNATURE" --setenv=XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" '
+      + 'hyprctl reload >/dev/null 2>&1 || { echo "Could not arm the safety timer, so the layout was not tried."; exit 97; }; fi; '
+      + 'if [ "$2" = plain ]; then case "$(hyprctl eval "$3" 2>&1)" in *"$4"*) '
       + 'hyprctl reload >/dev/null 2>&1; printf "%s\n" "@@RELOADED";; esac; fi; hyprctl eval "$1" 2>&1',
-      "_", built.lua, built.plain ? "plain" : "rules", Model.RULES_CHECK, Model.RULES_MARK])
+      "_", built.lua, built.plain ? "plain" : "rules", Model.RULES_CHECK, Model.RULES_MARK,
+      kind === "trial" ? root.watchdogUnit : "", String(root.confirmTimeout + 15)])
     return true
   }
 
@@ -272,12 +348,14 @@ Item {
     root.confirmSeconds = root.confirmTimeout
     root.confirmArmed = false
     root.confirmPrompted = false
+    root.verifyTries = 0
     root.confirmPending = true
     return true
   }
 
   function endConfirmation(kept, saved, message) {
     confirmTimer.stop()
+    disarmWatchdog()
     root.confirmPending = false
     root.confirmArmed = false
     root.confirmPrompted = false
@@ -290,6 +368,10 @@ Item {
 
   function keepChanges() {
     if (!root.confirmPending || !root.confirmArmed) return false
+    if (root.trialLayout && !Model.matchesLive(root.trialLayout, root.monitors, null, null)) {
+      root.lastError = "The new layout is not on screen yet, so there is nothing to keep."
+      return false
+    }
     var toSave = root.pendingSave
     root.standing = { layout: root.trialLayout, topology: root.topology }
     // Written before listeners hear about it, so they see the saved profile.
@@ -459,7 +541,7 @@ Item {
       lastError: root.lastError,
       workspaceOwners: root.workspaceOwners,
       monitors: root.monitors.map(function(m) {
-        return { name: m.name, key: m.key, description: m.description, enabled: m.enabled,
+        return { name: m.name, key: m.key, description: m.description, enabled: m.enabled, mirror: m.mirror,
                  width: m.width, height: m.height, x: m.x, y: m.y, scale: m.scale, transform: m.transform }
       }),
       profiles: root.profiles.map(function(p) {
@@ -712,6 +794,11 @@ Item {
 
     function status(): string { return root.statusJson() }
     function refresh(): void { root.refresh() }
+    function identify(): void { root.identify() }
+    function quick(choice: string): string {
+      return root.quickChoice(choice) ? "applying " + choice : "not applied: " + root.lastError
+    }
+    function choose(): void { root.chooserWanted = true }
     function list(): string {
       return root.profiles.map(function(p) { return p.id + "\t" + p.name }).join("\n")
     }

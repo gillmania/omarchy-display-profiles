@@ -63,6 +63,12 @@ function parseMonitors(raw) {
       serial: clean(m.serial),
       internal: isInternalName(m.name),
       enabled: m.disabled !== true,
+      // Hyprland names the mirrored monitor by its id; turned into a key below.
+      id: String(m.id),
+      mirror: m.mirrorOf !== undefined && m.mirrorOf !== null && String(m.mirrorOf) !== "none" && String(m.mirrorOf) !== ""
+        ? String(m.mirrorOf) : "",
+      physicalWidth: Number(m.physicalWidth) || 0,
+      physicalHeight: Number(m.physicalHeight) || 0,
       width: Number(m.width) || 0,
       height: Number(m.height) || 0,
       refreshRate: Number(m.refreshRate) || 0,
@@ -84,6 +90,14 @@ function parseMonitors(raw) {
   for (var a = 0; a < monitors.length; a++) seen[monitors[a].key] = (seen[monitors[a].key] || 0) + 1
   for (var b = 0; b < monitors.length; b++)
     if (seen[monitors[b].key] > 1) monitors[b].key = monitors[b].key + "@" + monitors[b].name
+
+  for (var c = 0; c < monitors.length; c++) {
+    if (monitors[c].mirror === "") continue
+    var source = ""
+    for (var d = 0; d < monitors.length; d++)
+      if (d !== c && (monitors[d].id === monitors[c].mirror || monitors[d].name === monitors[c].mirror)) source = monitors[d].key
+    monitors[c].mirror = source
+  }
   return monitors
 }
 
@@ -153,6 +167,13 @@ function logicalSize(monitor) {
   return rotated(monitor.transform) ? { width: h, height: w } : { width: w, height: h }
 }
 
+// Does the monitor have a desktop of its own? One that is switched off has
+// none, and neither has one that mirrors another: it shows that one's picture
+// and takes no place in the arrangement.
+function hasDesktop(monitor) {
+  return !!monitor && monitor.enabled !== false && !monitor.mirror
+}
+
 function rectOf(monitor) {
   var size = logicalSize(monitor)
   return { x: Number(monitor.x) || 0, y: Number(monitor.y) || 0, width: size.width, height: size.height }
@@ -166,7 +187,7 @@ function overlaps(a, b) {
 function layoutBounds(monitors) {
   var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
   for (var i = 0; i < (monitors || []).length; i++) {
-    if (monitors[i].enabled === false) continue
+    if (!hasDesktop(monitors[i])) continue
     var r = rectOf(monitors[i])
     minX = Math.min(minX, r.x)
     minY = Math.min(minY, r.y)
@@ -183,7 +204,7 @@ function normalize(monitors) {
   var result = []
   for (var i = 0; i < (monitors || []).length; i++) {
     var copy = cloneMonitor(monitors[i])
-    if (copy.enabled !== false) {
+    if (hasDesktop(copy)) {
       copy.x = Math.round(copy.x - bounds.x)
       copy.y = Math.round(copy.y - bounds.y)
     }
@@ -237,7 +258,7 @@ function landing(monitors, key, x, y, tolerance) {
   var others = []
   for (var i = 0; i < (monitors || []).length; i++) {
     if (monitors[i].key === key) moving = monitors[i]
-    else if (monitors[i].enabled !== false) others.push(rectOf(monitors[i]))
+    else if (hasDesktop(monitors[i])) others.push(rectOf(monitors[i]))
   }
   if (!moving) return null
   if (others.length === 0) return { x: Math.round(x), y: Math.round(y) }
@@ -276,7 +297,7 @@ function landing(monitors, key, x, y, tolerance) {
     }
   }
   for (var m = 0; m < monitors.length; m++) {
-    if (monitors[m].key === key || monitors[m].enabled === false) continue
+    if (monitors[m].key === key || !hasDesktop(monitors[m])) continue
     candidates = candidates.concat(attachPoints(moving, monitors[m]))
   }
 
@@ -337,7 +358,7 @@ function touching(a, b) {
 function connectedKeys(monitors, startKey) {
   var enabled = []
   for (var i = 0; i < (monitors || []).length; i++)
-    if (monitors[i].enabled !== false) enabled.push(monitors[i])
+    if (hasDesktop(monitors[i])) enabled.push(monitors[i])
   var reached = {}
   if (enabled.length === 0) return reached
   var start = enabled[0]
@@ -369,7 +390,7 @@ function reflow(monitors, anchorKey) {
   var settled = []
   var strays = []
   for (var j = 0; j < current.length; j++) {
-    if (current[j].enabled === false) continue
+    if (!hasDesktop(current[j])) continue
     if (reached[current[j].key]) settled.push(current[j])
     else strays.push(current[j])
   }
@@ -404,7 +425,7 @@ function snap(monitors, key, x, y, tolerance) {
   var sx = x, sy = y
   var bestX = reach, bestY = reach
   for (var o = 0; o < monitors.length; o++) {
-    if (monitors[o].key === key || monitors[o].enabled === false) continue
+    if (monitors[o].key === key || !hasDesktop(monitors[o])) continue
     var r = rectOf(monitors[o])
     var halfW = Math.round(size.width / 2), halfH = Math.round(size.height / 2)
     var xs = [r.x - size.width, r.x + r.width, r.x, r.x + r.width - size.width,
@@ -469,6 +490,178 @@ function sameScale(a, b) {
   return Math.abs(Number(a) - Number(b)) < 0.011
 }
 
+// ---- Modes ------------------------------------------------------------------
+
+// The modes a monitor offers, from Hyprland's "2560x1440@59.95Hz" strings,
+// without duplicates.
+function parseModes(list) {
+  var modes = []
+  var seen = {}
+  for (var i = 0; i < (list || []).length; i++) {
+    var match = /^(\d{3,5})x(\d{3,5})@(\d{1,4}(?:\.\d+)?)Hz$/.exec(clean(list[i]))
+    if (!match) continue
+    var mode = { width: Number(match[1]), height: Number(match[2]), refreshRate: Number(match[3]) }
+    var id = mode.width + "x" + mode.height + "@" + mode.refreshRate.toFixed(2)
+    if (seen[id]) continue
+    seen[id] = true
+    modes.push(mode)
+  }
+  return modes
+}
+
+// The resolutions a monitor offers, largest first. The one it runs at now is
+// always among them, even when Hyprland lists no modes at all.
+function resolutionOptions(monitor) {
+  var modes = parseModes(monitor.modes)
+  modes.push({ width: Number(monitor.width) || 0, height: Number(monitor.height) || 0 })
+  var seen = {}
+  var options = []
+  for (var i = 0; i < modes.length; i++) {
+    var id = modes[i].width + "x" + modes[i].height
+    if (seen[id] || modes[i].width <= 0 || modes[i].height <= 0) continue
+    seen[id] = true
+    options.push({ width: modes[i].width, height: modes[i].height, label: modes[i].width + "×" + modes[i].height })
+  }
+  options.sort(function(a, b) { return b.width * b.height - a.width * a.height || b.width - a.width })
+  return options
+}
+
+// The refresh rates offered at one resolution, fastest first. Rates that would
+// read the same (59.94 and 60.00 both say "60") are kept apart by one decimal
+// more.
+function rateOptions(monitor, width, height) {
+  var modes = parseModes(monitor.modes)
+  if (Number(monitor.width) === Number(width) && Number(monitor.height) === Number(height))
+    modes.push({ width: Number(width), height: Number(height), refreshRate: Number(monitor.refreshRate) || 0 })
+  var rates = []
+  for (var i = 0; i < modes.length; i++) {
+    if (modes[i].width !== Number(width) || modes[i].height !== Number(height)) continue
+    var known = false
+    for (var j = 0; j < rates.length; j++) if (Math.abs(rates[j] - modes[i].refreshRate) < 0.02) known = true
+    if (!known && modes[i].refreshRate > 0) rates.push(modes[i].refreshRate)
+  }
+  rates.sort(function(a, b) { return b - a })
+  var whole = {}
+  for (var k = 0; k < rates.length; k++) whole[Math.round(rates[k])] = (whole[Math.round(rates[k])] || 0) + 1
+  var options = []
+  for (var r = 0; r < rates.length; r++)
+    options.push({
+      value: rates[r],
+      label: (whole[Math.round(rates[r])] > 1 ? rates[r].toFixed(2) : String(Math.round(rates[r]))) + " Hz"
+    })
+  return options
+}
+
+// What changing the resolution means for the rest of a monitor's settings:
+// the fastest rate offered at it, and a scale it can actually run at.
+function modeChange(monitor, width, height) {
+  var rates = rateOptions(monitor, width, height)
+  var rate = rates.length > 0 ? rates[0].value : Number(monitor.refreshRate) || 60
+  // Keep the rate when the new resolution offers the same one.
+  for (var i = 0; i < rates.length; i++)
+    if (Math.abs(rates[i].value - Number(monitor.refreshRate)) < 0.02) rate = rates[i].value
+  return { width: Number(width), height: Number(height), refreshRate: rate,
+           scale: cleanScale(monitor.scale, width, height) }
+}
+
+function sameRate(a, b) {
+  return Math.abs(Number(a) - Number(b)) < 0.02
+}
+
+// ---- Quick choices ----------------------------------------------------------
+
+var QUICK_CHOICES = [
+  { id: "mirror", label: "Mirror" },
+  { id: "extend", label: "Extend" },
+  { id: "external", label: "External only" },
+  { id: "laptop", label: "Laptop only" }
+]
+
+// The monitor the others are told apart from: the laptop's own panel, or the
+// first monitor on a machine without one.
+function mainMonitor(monitors) {
+  for (var i = 0; i < (monitors || []).length; i++) if (monitors[i].internal) return monitors[i]
+  return (monitors || []).length > 0 ? monitors[0] : null
+}
+
+// The quick choices that make sense for what is connected. With one monitor
+// there is nothing to choose; without a laptop panel the two that switch
+// "the laptop" on or off are left out.
+function quickChoices(monitors) {
+  if ((monitors || []).length < 2) return []
+  var main = mainMonitor(monitors)
+  var choices = []
+  for (var i = 0; i < QUICK_CHOICES.length; i++)
+    if (main.internal || QUICK_CHOICES[i].id === "mirror" || QUICK_CHOICES[i].id === "extend") choices.push(QUICK_CHOICES[i])
+  return choices
+}
+
+// The layout a quick choice stands for, as a new draft:
+//   mirror    every other monitor shows what the main one shows
+//   extend    every monitor has its own desktop, side by side
+//   external  the laptop panel is off, the others extend
+//   laptop    only the laptop panel is on
+// Monitors that already have a desktop keep their place.
+function quickLayout(monitors, choice) {
+  var main = mainMonitor(monitors)
+  if (!main || (monitors || []).length < 2) return null
+  if ((choice === "external" || choice === "laptop") && !main.internal) return null
+  var draft = []
+  var joining = []
+  for (var i = 0; i < monitors.length; i++) {
+    var copy = cloneMonitor(monitors[i])
+    var isMain = copy.key === main.key
+    var had = hasDesktop(copy)
+    copy.mirror = ""
+    if (choice === "mirror") {
+      copy.enabled = true
+      if (!isMain) copy.mirror = main.key
+    } else if (choice === "extend") {
+      copy.enabled = true
+    } else if (choice === "external") {
+      copy.enabled = !isMain
+    } else if (choice === "laptop") {
+      copy.enabled = isMain
+    } else {
+      return null
+    }
+    if (hasDesktop(copy) && !had) joining.push(copy.key)
+    draft.push(copy)
+  }
+  // Monitors that get a desktop back go to the right of those that have one.
+  for (var j = 0; j < joining.length; j++) {
+    var settled = []
+    for (var k = 0; k < draft.length; k++)
+      if (hasDesktop(draft[k]) && joining.indexOf(draft[k].key, j) === -1) settled.push(draft[k])
+    var bounds = layoutBounds(settled)
+    for (var t = 0; t < draft.length; t++)
+      if (draft[t].key === joining[j]) { draft[t].x = bounds.x + bounds.width; draft[t].y = bounds.y }
+  }
+  return reflow(draft)
+}
+
+// Which quick choice the layout is, or "" when it is none of them (some
+// monitors mirrored and others not, say).
+function quickChoiceOf(monitors) {
+  var main = mainMonitor(monitors)
+  if (!main || (monitors || []).length < 2) return ""
+  var others = 0, othersOn = 0, othersMirror = 0
+  for (var i = 0; i < monitors.length; i++) {
+    if (monitors[i].key === main.key) continue
+    others++
+    if (monitors[i].enabled !== false) othersOn++
+    if (monitors[i].enabled !== false && monitors[i].mirror === main.key) othersMirror++
+    else if (monitors[i].enabled !== false && monitors[i].mirror) return ""
+  }
+  var mainOn = main.enabled !== false
+  if (mainOn && main.mirror) return ""
+  if (mainOn && othersOn === others && othersMirror === others) return "mirror"
+  if (mainOn && othersOn === others && othersMirror === 0) return "extend"
+  if (!mainOn && othersOn === others && othersMirror === 0) return "external"
+  if (mainOn && othersOn === 0) return "laptop"
+  return ""
+}
+
 // ---- Draft edits ------------------------------------------------------------
 
 // Change one monitor of a draft, then put it back on a valid spot: a new scale
@@ -485,14 +678,18 @@ function editMonitor(monitors, key, changes) {
     edited.push(copy)
   }
   if (!target) return monitors
-  if (target.enabled === false) return reflow(edited)
+  // Nothing may go on mirroring a monitor that no longer has a picture of its
+  // own to show.
+  if (!hasDesktop(target))
+    for (var d = 0; d < edited.length; d++) if (edited[d].mirror === key) edited[d].mirror = ""
+  if (!hasDesktop(target)) return reflow(edited)
 
   var x = target.x
   var y = target.y
-  if (changes.enabled === true) {
+  if (changes.enabled === true || changes.mirror === "") {
     var others = []
     for (var j = 0; j < edited.length; j++)
-      if (edited[j].key !== key && edited[j].enabled !== false) others.push(edited[j])
+      if (edited[j].key !== key && hasDesktop(edited[j])) others.push(edited[j])
     var bounds = layoutBounds(others)
     x = bounds.x + bounds.width
     y = bounds.y
@@ -502,13 +699,21 @@ function editMonitor(monitors, key, changes) {
 
 function enabledCount(monitors) {
   var count = 0
-  for (var i = 0; i < (monitors || []).length; i++) if (monitors[i].enabled !== false) count++
+  for (var i = 0; i < (monitors || []).length; i++) if (hasDesktop(monitors[i])) count++
   return count
 }
 
 function monitorByKey(monitors, key) {
   for (var i = 0; i < (monitors || []).length; i++) if (monitors[i].key === key) return monitors[i]
   return null
+}
+
+// The number a display carries in the panel and on its identify badge: its
+// place among the connected displays, counting from 1. 0 when not found.
+function displayNumber(monitors, name) {
+  for (var i = 0; i < (monitors || []).length; i++)
+    if (monitors[i].name === name) return i + 1
+  return 0
 }
 
 function shortName(monitor) {
@@ -548,7 +753,7 @@ function workspaceOwner(workspaces, id) {
 function primaryKey(monitors) {
   var enabled = []
   for (var i = 0; i < (monitors || []).length; i++)
-    if (monitors[i].enabled !== false) enabled.push(monitors[i])
+    if (hasDesktop(monitors[i])) enabled.push(monitors[i])
   for (var j = 0; j < enabled.length; j++)
     if (enabled[j].internal) return enabled[j].key
   return enabled.length > 0 ? enabled[0].key : ""
@@ -559,7 +764,7 @@ function primaryKey(monitors) {
 function completeWorkspaces(monitors, workspaces) {
   var enabledKeys = {}
   for (var i = 0; i < (monitors || []).length; i++)
-    if (monitors[i].enabled !== false) enabledKeys[monitors[i].key] = true
+    if (hasDesktop(monitors[i])) enabledKeys[monitors[i].key] = true
 
   var owner = {}
   for (var key in workspaces || {}) {
@@ -596,7 +801,7 @@ function parseWorkspaceRules(raw) {
   var rules = []
   for (var i = 0; i < parsed.length; i++) {
     var r = parsed[i]
-    if (!r || r.enabled === false) continue
+    if (!r || !hasDesktop(r)) continue
     var id = Number(r.workspaceString)
     var monitor = clean(r.monitor)
     if (!isFinite(id) || id < 1 || id > WORKSPACE_COUNT || Math.round(id) !== id || monitor === "") continue
@@ -729,15 +934,27 @@ function validProfile(p) {
     if (!inRange(m.transform, 0, 7) || Math.round(m.transform) !== m.transform) return null
     if (m.enabled !== undefined && typeof m.enabled !== "boolean") return null
     if (m.internal !== undefined && typeof m.internal !== "boolean") return null
+    if (m.mirror !== undefined && typeof m.mirror !== "string") return null
     keys[m.key] = true
     monitors.push({
       key: m.key,
       description: clean(m.description),
       internal: m.internal === true,
       enabled: m.enabled !== false,
+      mirror: m.enabled !== false && m.mirror ? m.mirror : "",
       width: m.width, height: m.height, refreshRate: m.refreshRate,
       x: m.x, y: m.y, scale: m.scale, transform: m.transform
     })
+  }
+  // A mirror must show a monitor of this profile that has a picture of its
+  // own: not itself, not one that is off, not another mirror.
+  var desktops = 0
+  for (var q = 0; q < monitors.length; q++) {
+    if (hasDesktop(monitors[q])) desktops++
+    if (monitors[q].mirror === "") continue
+    var shown = null
+    for (var t = 0; t < monitors.length; t++) if (monitors[t].key === monitors[q].mirror) shown = monitors[t]
+    if (!shown || shown === monitors[q] || !hasDesktop(shown)) return null
   }
   var workspaces = {}
   if (p.workspaces !== undefined && p.workspaces !== null) {
@@ -804,6 +1021,7 @@ function profileMonitor(monitor) {
     description: monitor.description,
     internal: monitor.internal === true,
     enabled: monitor.enabled !== false,
+    mirror: monitor.enabled !== false && monitor.mirror ? String(monitor.mirror) : "",
     width: monitor.width,
     height: monitor.height,
     refreshRate: monitor.refreshRate,
@@ -982,7 +1200,8 @@ function matchesLive(profile, monitors, owners, liveWorkspaces) {
     if ((want.enabled !== false) !== (have.enabled !== false)) return false
     present.push(want)
     if (want.enabled === false) continue
-    if (want.x !== have.x || want.y !== have.y) return false
+    if ((want.mirror || "") !== (have.mirror || "")) return false
+    if (!want.mirror && (want.x !== have.x || want.y !== have.y)) return false
     if (want.width !== have.width || want.height !== have.height) return false
     if (Math.abs(num(want.refreshRate, 0) - num(have.refreshRate, 0)) > 0.1) return false
     if (Math.abs(want.scale - have.scale) > 0.011) return false
@@ -1018,6 +1237,7 @@ function changesMonitors(wanted, monitors) {
     if (!have) continue
     if ((want.enabled !== false) !== (have.enabled !== false)) return true
     if (want.enabled === false) continue
+    if ((want.mirror || "") !== (have.mirror || "")) return true
     if (want.width !== have.width || want.height !== have.height) return true
     if (Math.abs(num(want.refreshRate, 0) - num(have.refreshRate, 0)) > 0.1) return true
     if (Math.abs(num(want.scale, 1) - num(have.scale, 1)) > 0.011) return true
@@ -1058,13 +1278,14 @@ function buildApplyLua(profile, monitors, owner) {
   }
 
   var lines = []
+  var mirrors = []
   var disables = []
   var skipped = []
   var enabledNames = {}
   var enabledCount = 0
   for (var j = 0; j < ((profile && profile.monitors) || []).length; j++) {
     var m = profile.monitors[j]
-    if (m && m.enabled !== false && nameByKey[m.key]) enabledCount++
+    if (m && hasDesktop(m) && nameByKey[m.key]) enabledCount++
   }
   // Never apply a profile that would turn every connected screen off.
   if (enabledCount === 0) return { lua: "", skipped: [], plain: false }
@@ -1078,20 +1299,33 @@ function buildApplyLua(profile, monitors, owner) {
       disables.push('hl.monitor({ output = "' + name + '", disabled = true })')
       continue
     }
-    enabledNames[want.key] = name
     var width = Math.round(num(want.width, 0))
     var height = Math.round(num(want.height, 0))
     var mode = width > 0 && height > 0
       ? width + "x" + height + "@" + luaNumber(want.refreshRate, 60, 3)
       : "preferred"
-    lines.push('hl.monitor({ output = "' + name + '", mode = "' + mode + '", position = "'
-      + Math.round(num(want.x, 0)) + "x" + Math.round(num(want.y, 0)) + '", scale = '
-      + luaNumber(want.scale, 1, 6) + ", transform = " + Math.round(num(want.transform, 0)) % 8 + " })")
+    // A rule set through eval updates the one already there, so what is not
+    // said stays as it was: "on" and "not a mirror" have to be said outright.
+    var settings = 'mode = "' + mode + '", scale = ' + luaNumber(want.scale, 1, 6)
+      + ", transform = " + Math.round(num(want.transform, 0)) % 8 + ", disabled = false"
+    var shown = want.mirror ? nameByKey[want.mirror] : ""
+    var source = null
+    for (var s2 = 0; s2 < profile.monitors.length; s2++)
+      if (profile.monitors[s2] && profile.monitors[s2].key === want.mirror) source = profile.monitors[s2]
+    if (shown && hasDesktop(source)) {
+      mirrors.push('hl.monitor({ output = "' + name + '", ' + settings + ', position = "auto", mirror = "' + shown + '" })')
+      continue
+    }
+    // A mirror whose source is not connected shows its own desktop instead.
+    enabledNames[want.key] = name
+    lines.push('hl.monitor({ output = "' + name + '", ' + settings + ', position = "'
+      + Math.round(num(want.x, 0)) + "x" + Math.round(num(want.y, 0)) + '", mirror = "" })')
   }
 
-  // Screens are switched on before any is switched off, so a failure part way
-  // through leaves more screens lit rather than fewer.
-  lines = lines.concat(disables)
+  // Desktops first, then the screens that mirror them, and screens are
+  // switched off last, so a failure part way through leaves more screens lit
+  // rather than fewer.
+  lines = lines.concat(mirrors).concat(disables)
   // Ownership is recorded before the first change, so that a chunk failing
   // part way through still leaves something for the release to find.
   lines.unshift('__display_profiles_owner = "' + (SAFE_NAME.test(clean(owner)) ? clean(owner) : "") + '"')
@@ -1116,6 +1350,7 @@ function buildApplyLua(profile, monitors, owner) {
     if (!profile.monitors[p]) continue
     var candidate = cloneMonitor(profile.monitors[p])
     if (!enabledNames[candidate.key]) candidate.enabled = false
+    else candidate.mirror = ""
     present.push(candidate)
   }
   var workspaces = completeWorkspaces(present, profile.workspaces)
@@ -1216,11 +1451,22 @@ if (typeof module !== "undefined") {
     RULES_CHECK: RULES_CHECK,
     cleanScale: cleanScale,
     scaleOptions: scaleOptions,
+    parseModes: parseModes,
+    resolutionOptions: resolutionOptions,
+    rateOptions: rateOptions,
+    modeChange: modeChange,
+    sameRate: sameRate,
     sameScale: sameScale,
     editMonitor: editMonitor,
     enabledCount: enabledCount,
     monitorByKey: monitorByKey,
     shortName: shortName,
+    displayNumber: displayNumber,
+    hasDesktop: hasDesktop,
+    quickChoices: quickChoices,
+    quickLayout: quickLayout,
+    quickChoiceOf: quickChoiceOf,
+    mainMonitor: mainMonitor,
     workspaceOwnerNames: workspaceOwnerNames,
     stripIds: stripIds,
     workspaceRuns: workspaceRuns

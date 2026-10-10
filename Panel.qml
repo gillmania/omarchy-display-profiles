@@ -77,9 +77,10 @@ Panel {
   // (and saved) is the layout that was sent, not something edited since.
   function edit(key, changes) {
     if (confirming) return
-    // The last screen that is on must stay on.
-    if (changes.enabled === false && Model.enabledCount(draft) <= 1) return
-    draft = Model.editMonitor(draft, key, changes)
+    // At least one screen has to keep a desktop of its own.
+    var next = Model.editMonitor(draft, key, changes)
+    if (Model.enabledCount(next) < 1) return
+    draft = next
     draftWorkspaces = Model.completeWorkspaces(draft, draftWorkspaces)
     dirty = true
   }
@@ -109,6 +110,34 @@ Panel {
     var index = 0
     for (var i = 0; i < draft.length; i++) if (draft[i].key === selectedKey) index = i
     selectedKey = draft[(index + delta + draft.length) % draft.length].key
+  }
+
+  // One of the quick choices (mirror, extend, external only, laptop only). It
+  // is tried at once, like pressing Apply.
+  function quick(choice) {
+    if (confirming || !serviceReady) return
+    var next = Model.quickLayout(draft, choice)
+    if (!next || Model.enabledCount(next) < 1) return
+    draft = next
+    draftWorkspaces = Model.completeWorkspaces(draft, draftWorkspaces)
+    dirty = true
+    applyDraft()
+  }
+
+  // "" for a desktop of its own, or the key of the display to show.
+  function setMirror(value) {
+    if (!selected) return
+    edit(selectedKey, { mirror: String(value), enabled: true })
+  }
+
+  function setResolution(value) {
+    var parts = String(value).split("x")
+    if (!selected || parts.length !== 2) return
+    edit(selectedKey, Model.modeChange(selected, Number(parts[0]), Number(parts[1])))
+  }
+
+  function setRate(value) {
+    if (selected && Number(value) > 0) edit(selectedKey, { refreshRate: Number(value) })
   }
 
   function rotateSelected() {
@@ -220,7 +249,7 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      blocked: root.naming
+      blocked: root.naming || resolutionPicker.popupOpen || ratePicker.popupOpen || mirrorPicker.popupOpen
       onMoveRequested: function(dx, dy) {
         if (dx !== 0) root.cycleSelection(dx)
         else if (dy !== 0) root.cycleSelection(dy)
@@ -237,6 +266,7 @@ Panel {
           else if (t === "u" || t === "U") root.service.revertChanges()
           return
         }
+        if (t === "i" || t === "I") { root.service.identify(); return }
         if (t >= "1" && t <= "9") root.assign(Number(t))
         else if (t === "0") root.assign(10)
         else if (t === "a" || t === "A") root.applyDraft()
@@ -310,6 +340,32 @@ Panel {
 
           PanelSeparator { foreground: root.fg }
 
+          // ---------- Quick choices ----------
+          // The fast way for the common case: a projector or a second screen
+          // was plugged in and it should mirror or extend, now.
+          Flow {
+            id: quickRow
+            readonly property var choices: Model.quickChoices(root.draft)
+            readonly property string current: Model.quickChoiceOf(root.draft)
+            visible: choices.length > 0
+            width: parent.width
+            spacing: Style.space(6)
+
+            Repeater {
+              model: quickRow.choices
+
+              Button {
+                required property var modelData
+                text: modelData.label
+                bordered: true
+                selected: quickRow.current === modelData.id
+                foreground: root.fg
+                fontFamily: root.fontFamily
+                onClicked: root.quick(modelData.id)
+              }
+            }
+          }
+
           // ---------- Arrangement ----------
           PanelSectionHeader {
             text: "ARRANGEMENT"
@@ -355,7 +411,14 @@ Panel {
                 readonly property bool isSelected: modelData.key === root.selectedKey
                 readonly property var ids: root.draftDedicated ? (root.draftWorkspaces[modelData.key] || []) : []
 
-                visible: modelData.enabled !== false
+                visible: Model.hasDesktop(modelData)
+                readonly property string mirroredBy: {
+                  var names = []
+                  for (var i = 0; i < root.draft.length; i++)
+                    if (root.draft[i].enabled !== false && root.draft[i].mirror === modelData.key)
+                      names.push(Model.displayNumber(root.draft, root.draft[i].name))
+                  return names.length > 0 ? "mirrored on " + names.join(", ") : ""
+                }
                 x: canvas.originX + (rect.x - canvas.bounds.x) * canvas.factor
                 y: canvas.originY + (rect.y - canvas.bounds.y) * canvas.factor
                 width: Math.max(1, rect.width * canvas.factor - 2)
@@ -376,7 +439,7 @@ Panel {
                     textFormat: Text.PlainText
                     width: parent.width
                     horizontalAlignment: Text.AlignHCenter
-                    text: Model.shortName(tile.modelData)
+                    text: Model.displayNumber(root.draft, tile.modelData.name) + "  " + Model.shortName(tile.modelData)
                     color: root.fg
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.caption
@@ -388,8 +451,8 @@ Panel {
                     textFormat: Text.PlainText
                     width: parent.width
                     horizontalAlignment: Text.AlignHCenter
-                    visible: tile.height > Style.space(34)
-                    text: tile.ids.join(" ")
+                    visible: tile.height > Style.space(34) && text !== ""
+                    text: tile.mirroredBy !== "" ? tile.mirroredBy : tile.ids.join(" ")
                     color: root.dim
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.caption
@@ -447,7 +510,7 @@ Panel {
           Text {
             textFormat: Text.PlainText
             width: parent.width
-            text: "Drag a display to where it sits on your desk. The outline shows where it will land."
+            text: "Drag a display to where it sits on your desk. The outline shows where it will land. Press i to show each screen its number."
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
@@ -508,6 +571,9 @@ Panel {
                     width: parent.width
                     text: displayRow.modelData.enabled === false
                       ? displayRow.modelData.name + " · off"
+                      : displayRow.modelData.mirror
+                      ? displayRow.modelData.name + " · " + displayRow.modelData.width + "×" + displayRow.modelData.height
+                        + " · mirrors " + Model.shortName(Model.monitorByKey(root.draft, displayRow.modelData.mirror) || displayRow.modelData)
                       : displayRow.modelData.name + " · " + displayRow.modelData.width + "×" + displayRow.modelData.height
                         + (root.draftDedicated
                           ? " · workspaces " + ((root.draftWorkspaces[displayRow.modelData.key] || []).join(" ") || "none")
@@ -544,6 +610,67 @@ Panel {
             text: root.selected ? Model.shortName(root.selected).toUpperCase() : ""
             foreground: root.fg
             fontFamily: root.fontFamily
+          }
+
+          Row {
+            visible: root.selected !== null && root.selected.enabled !== false
+            width: parent.width
+            spacing: Style.space(8)
+
+            Dropdown {
+              id: resolutionPicker
+              width: (parent.width - parent.spacing) / 2
+              label: "RESOLUTION"
+              foreground: root.fg
+              fontFamily: root.fontFamily
+              options: root.selected
+                ? Model.resolutionOptions(root.selected).map(function(o) { return { value: o.width + "x" + o.height, label: o.label } })
+                : []
+              value: root.selected ? root.selected.width + "x" + root.selected.height : ""
+              onChanged: function(value) { root.setResolution(value) }
+            }
+
+            Dropdown {
+              id: ratePicker
+              width: (parent.width - parent.spacing) / 2
+              label: "REFRESH RATE"
+              foreground: root.fg
+              fontFamily: root.fontFamily
+              options: root.selected
+                ? Model.rateOptions(root.selected, root.selected.width, root.selected.height).map(function(o) { return { value: String(o.value), label: o.label } })
+                : []
+              value: {
+                if (!root.selected) return ""
+                var rates = Model.rateOptions(root.selected, root.selected.width, root.selected.height)
+                for (var i = 0; i < rates.length; i++)
+                  if (Model.sameRate(rates[i].value, root.selected.refreshRate)) return String(rates[i].value)
+                return ""
+              }
+              onChanged: function(value) { root.setRate(value) }
+            }
+          }
+
+          Dropdown {
+            id: mirrorPicker
+            visible: root.selected !== null && root.selected.enabled !== false && options.length > 1
+            width: parent.width
+            label: "SHOWS"
+            foreground: root.fg
+            fontFamily: root.fontFamily
+            options: {
+              var list = [{ value: "", label: "Its own desktop" }]
+              if (!root.selected) return list
+              for (var i = 0; i < root.draft.length; i++) {
+                var other = root.draft[i]
+                // Only a display with its own desktop can be mirrored, and not
+                // one that is itself showing this display.
+                if (other.key === root.selectedKey || !Model.hasDesktop(other)) continue
+                list.push({ value: other.key, label: "Mirror of " + Model.displayNumber(root.draft, other.name) + "  " + Model.shortName(other) })
+              }
+              return list
+            }
+            value: root.selected ? (root.selected.mirror || "") : ""
+            onChanged: function(value) { root.setMirror(value) }
           }
 
           Flow {
@@ -637,6 +764,15 @@ Panel {
             visible: !root.naming && !root.confirming
             width: parent.width
             spacing: Style.space(8)
+
+            Button {
+              text: "Identify"
+              bordered: true
+              foreground: root.fg
+              fontFamily: root.fontFamily
+              tooltipText: "Show each screen its number for a few seconds"
+              onClicked: if (root.serviceReady) root.service.identify()
+            }
 
             Button {
               text: "Apply"

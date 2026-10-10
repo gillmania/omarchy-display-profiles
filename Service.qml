@@ -107,6 +107,28 @@ Item {
 
   function refresh() { probe("refresh") }
 
+  // ---- Identify ----
+  // Shows each screen its number for a few seconds. The badges live in a file
+  // of their own, loaded here so that they exist once however many bars do.
+  property bool identifying: false
+
+  function identify() {
+    root.identifying = true
+    identifyTimer.restart()
+  }
+
+  Timer {
+    id: identifyTimer
+    interval: 3000
+    onTriggered: root.identifying = false
+  }
+
+  Loader {
+    active: root.identifying
+    source: Qt.resolvedUrl("IdentifyOverlay.qml")
+    onLoaded: item.service = root
+  }
+
   // ---- Probing ----
 
   readonly property var reasonRank: ({ "": 0, refresh: 1, applied: 2, hotplug: 3, reload: 4, startup: 5 })
@@ -712,6 +734,7 @@ Item {
 
     function status(): string { return root.statusJson() }
     function refresh(): void { root.refresh() }
+    function identify(): void { root.identify() }
     function list(): string {
       return root.profiles.map(function(p) { return p.id + "\t" + p.name }).join("\n")
     }

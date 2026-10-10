@@ -609,3 +609,25 @@ test("only a layout with dedicated workspaces marks its rules in Hyprland", () =
   assert.match(Model.RULES_CHECK, new RegExp(Model.RULES_MARK))
   assert.match(Model.buildReleaseLua("o"), /__display_profiles_has_rules = nil/)
 })
+
+test("resolutions and refresh rates come from the modes a display offers", () => {
+  const monitor = {
+    width: 2560, height: 1440, refreshRate: 59.951, scale: 1.25,
+    modes: ["2560x1440@59.95Hz", "1920x1080@60.00Hz", "1920x1080@60.00Hz", "1920x1080@59.94Hz",
+            "1920x1080@50.00Hz", "1280x720@60.00Hz", "garbage", "3840x2160@143.99Hz"]
+  }
+  assert.deepEqual(Model.resolutionOptions(monitor).map((o) => o.label),
+    ["3840×2160", "2560×1440", "1920×1080", "1280×720"])
+  assert.deepEqual(Model.rateOptions(monitor, 1920, 1080).map((o) => o.label), ["60.00 Hz", "59.94 Hz", "50 Hz"])
+  assert.deepEqual(Model.rateOptions(monitor, 2560, 1440).map((o) => o.label), ["60 Hz"])
+  // A display that lists no modes still offers what it runs at.
+  const bare = { width: 1920, height: 515, refreshRate: 60.075, scale: 1.25, modes: [] }
+  assert.deepEqual(Model.resolutionOptions(bare).map((o) => o.label), ["1920×515"])
+  assert.deepEqual(Model.rateOptions(bare, 1920, 515).map((o) => o.label), ["60 Hz"])
+
+  const change = Model.modeChange(monitor, 1920, 1080)
+  // The rate closest to the one in use is kept when the new resolution has it.
+  assert.equal(change.refreshRate, 59.94)
+  assert.equal(change.scale, Model.cleanScale(1.25, 1920, 1080))
+  assert.equal(Model.modeChange(monitor, 3840, 2160).refreshRate, 143.99)
+})

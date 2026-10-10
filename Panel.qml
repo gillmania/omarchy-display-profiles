@@ -111,6 +111,16 @@ Panel {
     selectedKey = draft[(index + delta + draft.length) % draft.length].key
   }
 
+  function setResolution(value) {
+    var parts = String(value).split("x")
+    if (!selected || parts.length !== 2) return
+    edit(selectedKey, Model.modeChange(selected, Number(parts[0]), Number(parts[1])))
+  }
+
+  function setRate(value) {
+    if (selected && Number(value) > 0) edit(selectedKey, { refreshRate: Number(value) })
+  }
+
   function rotateSelected() {
     if (selected) edit(selectedKey, { transform: (Number(selected.transform) + 1) % 4 })
   }
@@ -220,7 +230,7 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      blocked: root.naming
+      blocked: root.naming || resolutionPicker.popupOpen || ratePicker.popupOpen
       onMoveRequested: function(dx, dy) {
         if (dx !== 0) root.cycleSelection(dx)
         else if (dy !== 0) root.cycleSelection(dy)
@@ -237,6 +247,7 @@ Panel {
           else if (t === "u" || t === "U") root.service.revertChanges()
           return
         }
+        if (t === "i" || t === "I") { root.service.identify(); return }
         if (t >= "1" && t <= "9") root.assign(Number(t))
         else if (t === "0") root.assign(10)
         else if (t === "a" || t === "A") root.applyDraft()
@@ -376,7 +387,7 @@ Panel {
                     textFormat: Text.PlainText
                     width: parent.width
                     horizontalAlignment: Text.AlignHCenter
-                    text: Model.shortName(tile.modelData)
+                    text: Model.displayNumber(root.draft, tile.modelData.name) + "  " + Model.shortName(tile.modelData)
                     color: root.fg
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.caption
@@ -447,7 +458,7 @@ Panel {
           Text {
             textFormat: Text.PlainText
             width: parent.width
-            text: "Drag a display to where it sits on your desk. The outline shows where it will land."
+            text: "Drag a display to where it sits on your desk. The outline shows where it will land. Press i to show each screen its number."
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
@@ -546,6 +557,44 @@ Panel {
             fontFamily: root.fontFamily
           }
 
+          Row {
+            visible: root.selected !== null && root.selected.enabled !== false
+            width: parent.width
+            spacing: Style.space(8)
+
+            Dropdown {
+              id: resolutionPicker
+              width: (parent.width - parent.spacing) / 2
+              label: "RESOLUTION"
+              foreground: root.fg
+              fontFamily: root.fontFamily
+              options: root.selected
+                ? Model.resolutionOptions(root.selected).map(function(o) { return { value: o.width + "x" + o.height, label: o.label } })
+                : []
+              value: root.selected ? root.selected.width + "x" + root.selected.height : ""
+              onChanged: function(value) { root.setResolution(value) }
+            }
+
+            Dropdown {
+              id: ratePicker
+              width: (parent.width - parent.spacing) / 2
+              label: "REFRESH RATE"
+              foreground: root.fg
+              fontFamily: root.fontFamily
+              options: root.selected
+                ? Model.rateOptions(root.selected, root.selected.width, root.selected.height).map(function(o) { return { value: String(o.value), label: o.label } })
+                : []
+              value: {
+                if (!root.selected) return ""
+                var rates = Model.rateOptions(root.selected, root.selected.width, root.selected.height)
+                for (var i = 0; i < rates.length; i++)
+                  if (Model.sameRate(rates[i].value, root.selected.refreshRate)) return String(rates[i].value)
+                return ""
+              }
+              onChanged: function(value) { root.setRate(value) }
+            }
+          }
+
           Flow {
             visible: root.selected !== null && root.selected.enabled !== false
             width: parent.width
@@ -637,6 +686,15 @@ Panel {
             visible: !root.naming && !root.confirming
             width: parent.width
             spacing: Style.space(8)
+
+            Button {
+              text: "Identify"
+              bordered: true
+              foreground: root.fg
+              fontFamily: root.fontFamily
+              tooltipText: "Show each screen its number for a few seconds"
+              onClicked: if (root.serviceReady) root.service.identify()
+            }
 
             Button {
               text: "Apply"

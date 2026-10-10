@@ -469,6 +469,84 @@ function sameScale(a, b) {
   return Math.abs(Number(a) - Number(b)) < 0.011
 }
 
+// ---- Modes ------------------------------------------------------------------
+
+// The modes a monitor offers, from Hyprland's "2560x1440@59.95Hz" strings,
+// without duplicates.
+function parseModes(list) {
+  var modes = []
+  var seen = {}
+  for (var i = 0; i < (list || []).length; i++) {
+    var match = /^(\d{3,5})x(\d{3,5})@(\d{1,4}(?:\.\d+)?)Hz$/.exec(clean(list[i]))
+    if (!match) continue
+    var mode = { width: Number(match[1]), height: Number(match[2]), refreshRate: Number(match[3]) }
+    var id = mode.width + "x" + mode.height + "@" + mode.refreshRate.toFixed(2)
+    if (seen[id]) continue
+    seen[id] = true
+    modes.push(mode)
+  }
+  return modes
+}
+
+// The resolutions a monitor offers, largest first. The one it runs at now is
+// always among them, even when Hyprland lists no modes at all.
+function resolutionOptions(monitor) {
+  var modes = parseModes(monitor.modes)
+  modes.push({ width: Number(monitor.width) || 0, height: Number(monitor.height) || 0 })
+  var seen = {}
+  var options = []
+  for (var i = 0; i < modes.length; i++) {
+    var id = modes[i].width + "x" + modes[i].height
+    if (seen[id] || modes[i].width <= 0 || modes[i].height <= 0) continue
+    seen[id] = true
+    options.push({ width: modes[i].width, height: modes[i].height, label: modes[i].width + "×" + modes[i].height })
+  }
+  options.sort(function(a, b) { return b.width * b.height - a.width * a.height || b.width - a.width })
+  return options
+}
+
+// The refresh rates offered at one resolution, fastest first. Rates that would
+// read the same (59.94 and 60.00 both say "60") are kept apart by one decimal
+// more.
+function rateOptions(monitor, width, height) {
+  var modes = parseModes(monitor.modes)
+  if (Number(monitor.width) === Number(width) && Number(monitor.height) === Number(height))
+    modes.push({ width: Number(width), height: Number(height), refreshRate: Number(monitor.refreshRate) || 0 })
+  var rates = []
+  for (var i = 0; i < modes.length; i++) {
+    if (modes[i].width !== Number(width) || modes[i].height !== Number(height)) continue
+    var known = false
+    for (var j = 0; j < rates.length; j++) if (Math.abs(rates[j] - modes[i].refreshRate) < 0.02) known = true
+    if (!known && modes[i].refreshRate > 0) rates.push(modes[i].refreshRate)
+  }
+  rates.sort(function(a, b) { return b - a })
+  var whole = {}
+  for (var k = 0; k < rates.length; k++) whole[Math.round(rates[k])] = (whole[Math.round(rates[k])] || 0) + 1
+  var options = []
+  for (var r = 0; r < rates.length; r++)
+    options.push({
+      value: rates[r],
+      label: (whole[Math.round(rates[r])] > 1 ? rates[r].toFixed(2) : String(Math.round(rates[r]))) + " Hz"
+    })
+  return options
+}
+
+// What changing the resolution means for the rest of a monitor's settings:
+// the fastest rate offered at it, and a scale it can actually run at.
+function modeChange(monitor, width, height) {
+  var rates = rateOptions(monitor, width, height)
+  var rate = rates.length > 0 ? rates[0].value : Number(monitor.refreshRate) || 60
+  // Keep the rate when the new resolution offers the same one.
+  for (var i = 0; i < rates.length; i++)
+    if (Math.abs(rates[i].value - Number(monitor.refreshRate)) < 0.02) rate = rates[i].value
+  return { width: Number(width), height: Number(height), refreshRate: rate,
+           scale: cleanScale(monitor.scale, width, height) }
+}
+
+function sameRate(a, b) {
+  return Math.abs(Number(a) - Number(b)) < 0.02
+}
+
 // ---- Draft edits ------------------------------------------------------------
 
 // Change one monitor of a draft, then put it back on a valid spot: a new scale
@@ -509,6 +587,14 @@ function enabledCount(monitors) {
 function monitorByKey(monitors, key) {
   for (var i = 0; i < (monitors || []).length; i++) if (monitors[i].key === key) return monitors[i]
   return null
+}
+
+// The number a display carries in the panel and on its identify badge: its
+// place among the connected displays, counting from 1. 0 when not found.
+function displayNumber(monitors, name) {
+  for (var i = 0; i < (monitors || []).length; i++)
+    if (monitors[i].name === name) return i + 1
+  return 0
 }
 
 function shortName(monitor) {
@@ -1216,11 +1302,17 @@ if (typeof module !== "undefined") {
     RULES_CHECK: RULES_CHECK,
     cleanScale: cleanScale,
     scaleOptions: scaleOptions,
+    parseModes: parseModes,
+    resolutionOptions: resolutionOptions,
+    rateOptions: rateOptions,
+    modeChange: modeChange,
+    sameRate: sameRate,
     sameScale: sameScale,
     editMonitor: editMonitor,
     enabledCount: enabledCount,
     monitorByKey: monitorByKey,
     shortName: shortName,
+    displayNumber: displayNumber,
     workspaceOwnerNames: workspaceOwnerNames,
     stripIds: stripIds,
     workspaceRuns: workspaceRuns

@@ -752,3 +752,176 @@ test("the name field's own editing replaces a range within the limit", () => {
   assert.deepEqual(Model.spliceText("abc", 3, 3, "defgh", 5), { text: "abcde", cursor: 5 })
   assert.deepEqual(Model.spliceText("abc", 1, 2, "x\ny", 48), { text: "ax yc", cursor: 4 })
 })
+
+// ---- Holds ------------------------------------------------------------------
+
+const PAD = { name: "DP-1", make: "BOE", model: "0x0921", width: 1920, height: 515, scale: 1.25, y: 864 }
+
+function duo(padOff) {
+  return Model.parseMonitors(hyprMonitors([LAPTOP, { ...PAD, disabled: padOff === true }]))
+}
+
+function duoProfile(dedicated) {
+  const monitors = duo()
+  const [laptop, pad] = monitors
+  return Model.makeProfile("p4", "Laptop 2 screen", monitors,
+    { [laptop.key]: [1, 2, 3, 4, 5, 6, 7], [pad.key]: [8, 9, 10] }, null, dedicated)
+}
+
+const PAD_KEY = "BOE|0x0921@DP-1"
+
+test("holds name a display by key or by its full description, and only one", () => {
+  const monitors = duo()
+  assert.equal(Model.holdKey(monitors, PAD_KEY), PAD_KEY)
+  assert.equal(Model.holdKey(monitors, "desc:BOE 0x0921"), PAD_KEY)
+  assert.equal(Model.holdKey(monitors, "desc:BOE"), "")
+  const twins = Model.parseMonitors(hyprMonitors([DELL_A, { ...DELL_A, name: "DP-9" }]))
+  assert.equal(Model.holdKey(twins, "desc:Dell Inc. DELL U2715H AAA"), "")
+})
+
+test("a display is held by one owner at a time", () => {
+  let r = Model.setHold([], "desc:BOE 0x0921", "off", "ScreenPad key")
+  assert.equal(r.error, "")
+  r = Model.setHold(r.holds, "desc:BOE 0x0921", "reserved", "ScreenPad key")
+  assert.deepEqual(r.holds, [{ display: "desc:BOE 0x0921", state: "reserved", owner: "ScreenPad key" }])
+  const other = Model.setHold(r.holds, "desc:BOE 0x0921", "on", "Someone else")
+  assert.match(other.error, /held by ScreenPad key/)
+  assert.equal(other.holds, r.holds)
+  assert.match(Model.setHold([], "x", "sideways", "o").error, /on, off or reserved/)
+})
+
+test("only the owner takes a hold off, except the panel's release", () => {
+  const holds = [{ display: "desc:BOE 0x0921", state: "off", owner: "ScreenPad key" }]
+  assert.match(Model.removeHold(holds, "desc:BOE 0x0921", "Someone else").error, /held by/)
+  assert.deepEqual(Model.removeHold(holds, "desc:BOE 0x0921", "ScreenPad key").holds, [])
+  assert.deepEqual(Model.removeHold(holds, "desc:BOE 0x0921", "", true).holds, [])
+  assert.match(Model.removeHold(holds, "desc:other", "ScreenPad key").error, /not held/)
+})
+
+test("an unreadable holds file means no holds", () => {
+  assert.deepEqual(Model.loadHolds("").holds, [])
+  assert.match(Model.loadHolds("{").error, /could not be read/)
+  assert.match(Model.loadHolds('{"version":2,"holds":[]}').error, /format/)
+  const loaded = Model.loadHolds(JSON.stringify({ version: 1, holds: [
+    { display: "desc:BOE 0x0921", state: "off", owner: "key" },
+    { display: "desc:BOE 0x0921", state: "on", owner: "key" },
+    { display: "", state: "off", owner: "key" },
+    { display: "x", state: "gone", owner: "key" }
+  ] }))
+  assert.deepEqual(loaded.holds, [{ display: "desc:BOE 0x0921", state: "off", owner: "key" }])
+  assert.deepEqual(Model.loadHolds(Model.holdsFile(loaded.holds)).holds, loaded.holds)
+})
+
+test("without holds a profile is applied exactly as before", () => {
+  for (const dedicated of [true, false]) {
+    const profile = duoProfile(dedicated)
+    const plain = Model.buildApplyLua(profile, duo(), "o1")
+    const withNone = Model.buildApplyLua(profile, duo(), "o1", [], [], [])
+    assert.equal(withNone.lua, plain.lua)
+    assert.deepEqual(withNone.refused, [])
+  }
+})
+
+test("a display held off is switched off and its workspaces go to the laptop", () => {
+  const holds = [{ display: "desc:BOE 0x0921", state: "off", owner: "key" }]
+  const { lua } = Model.buildApplyLua(duoProfile(true), duo(), "o1", holds)
+  assert.match(lua, /hl\.monitor\(\{ output = "DP-1", disabled = true \}\)/)
+  assert.doesNotMatch(lua, /monitor = "DP-1"/)
+  for (const id of [8, 9, 10]) assert.match(lua, new RegExp('workspace = "' + id + '", monitor = "eDP-1"'))
+})
+
+test("a reserved display stays on, out of reach, with no workspaces", () => {
+  const holds = [{ display: "desc:BOE 0x0921", state: "reserved", owner: "key" }]
+  const { lua } = Model.buildApplyLua(duoProfile(true), duo(), "o1", holds)
+  const line = lua.split("\n").find((l) => l.includes('output = "DP-1"'))
+  assert.match(line, /disabled = false/)
+  const [, x] = line.match(/position = "(\d+)x(\d+)"/)
+  assert.ok(Number(x) >= 10000, "far from the desktop")
+  assert.doesNotMatch(lua, /monitor = "DP-1"/)
+  for (const id of [8, 9, 10]) assert.match(lua, new RegExp('workspace = "' + id + '", monitor = "eDP-1"'))
+})
+
+test("a hold that switches a display on wins over a profile that has it off", () => {
+  const monitors = duo()
+  const off = Model.makeProfile("p1", "Laptop one screen",
+    monitors.map((m) => (m.key === PAD_KEY ? { ...m, enabled: false } : m)), {}, null, true)
+  const holds = [{ display: "desc:BOE 0x0921", state: "on", owner: "key" }]
+  const { lua } = Model.buildApplyLua(off, monitors, "o1", holds)
+  assert.match(lua, /output = "DP-1", mode = .*disabled = false/)
+  assert.doesNotMatch(lua, /output = "DP-1", disabled = true/)
+})
+
+test("holds that would leave no desktop are set aside", () => {
+  const monitors = duo()
+  const laptopOnly = Model.makeProfile("p1", "Laptop only",
+    monitors.map((m) => (m.key === PAD_KEY ? { ...m, enabled: false } : m)), {}, null, true)
+  const holds = [{ display: monitors[0].key, state: "off", owner: "key" }]
+  const { lua, refused } = Model.buildApplyLua(laptopOnly, monitors, "o1", holds)
+  assert.deepEqual(refused, holds)
+  assert.match(lua, /output = "eDP-1", mode = .*disabled = false/)
+})
+
+test("without dedicated workspaces only the held display's workspaces are moved", () => {
+  const holds = [{ display: "desc:BOE 0x0921", state: "off", owner: "key" }]
+  const rules = [{ id: 1, monitor: "eDP-1" }, { id: 9, monitor: "DP-1" }, { id: 10, monitor: "DP-1" }]
+  const live = [{ id: 1, monitor: "eDP-1" }, { id: 9, monitor: "DP-1" }]
+  const { lua, plain } = Model.buildApplyLua(duoProfile(false), duo(), "o1", holds, live, rules)
+  assert.equal(plain, true)
+  assert.match(lua, /__display_setups_has_rules = true/)
+  assert.match(lua, /workspace = "9", monitor = "eDP-1"/)
+  assert.match(lua, /workspace = "10", monitor = "eDP-1"/)
+  assert.doesNotMatch(lua, /workspace = "1"/)
+})
+
+test("a display held off is not drift, and without the hold it is", () => {
+  const profile = duoProfile(true)
+  const holds = [{ display: "desc:BOE 0x0921", state: "off", owner: "key" }]
+  const live = duo(true)
+  const owners = {}
+  for (let id = 1; id <= 10; id++) owners[id] = "eDP-1"
+  assert.equal(Model.matchesLive(profile, live, owners, [], holds), true)
+  assert.equal(Model.matchesLive(profile, live, owners, []), false)
+})
+
+test("holds alone touch only the held display when no profile is applied", () => {
+  const holds = [{ display: "desc:BOE 0x0921", state: "off", owner: "key" }]
+  const rules = [{ id: 9, monitor: "DP-1" }]
+  const { lua } = Model.buildHoldsLua(duo(), holds, "o1", [], rules)
+  assert.match(lua, /output = "DP-1", disabled = true/)
+  assert.doesNotMatch(lua, /output = "eDP-1"/)
+  assert.match(lua, /workspace = "9", monitor = "eDP-1"/)
+  assert.equal(Model.buildHoldsLua(duo(), [], "o1", [], rules).lua, "")
+  const lastOne = Model.buildHoldsLua(duo(true), [{ display: "AU Optronics|0xA48F@eDP-1", state: "off", owner: "k" }], "o1", [], [])
+  assert.equal(lastOne.lua, "")
+  assert.equal(lastOne.refused.length, 1)
+})
+
+test("a held display is saved the way its profile has it, not the way the hold left it", () => {
+  const profile = duoProfile(true)
+  const holds = [{ display: "desc:BOE 0x0921", state: "off", owner: "key" }]
+  const draft = Model.unheldDraft(duo(true), holds, profile)
+  const pad = draft.find((m) => m.key === PAD_KEY)
+  assert.equal(pad.enabled, true)
+  assert.equal(pad.y, 864)
+  assert.equal(pad.name, "DP-1")
+  const untouched = Model.unheldDraft(duo(true), [], profile)
+  assert.equal(untouched.find((m) => m.key === PAD_KEY).enabled, false)
+})
+
+test("a held display's workspaces are saved the way its profile has them", () => {
+  const profile = duoProfile(true)
+  const holds = [{ display: "desc:BOE 0x0921", state: "off", owner: "key" }]
+  const draft = Model.unheldDraft(duo(true), holds, profile)
+  const live = { "AU Optronics|0xA48F@eDP-1": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], [PAD_KEY]: [] }
+  const saved = Model.makeProfile("p9", "x", draft, Model.unheldWorkspaces(live, draft, holds, profile), null, true)
+  assert.deepEqual(saved.workspaces[PAD_KEY], [8, 9, 10])
+  assert.deepEqual(saved.workspaces["AU Optronics|0xA48F@eDP-1"], [1, 2, 3, 4, 5, 6, 7])
+  assert.deepEqual(Model.unheldWorkspaces(live, draft, [], profile), live)
+})
+
+test("a workspace is only moved onto a monitor that is already there", () => {
+  const { lua } = Model.buildApplyLua(duoProfile(true), duo(true), "o1")
+  const moves = lua.split("\n").filter((l) => l.includes("workspace.move"))
+  assert.equal(moves.length, 10)
+  for (const line of moves) assert.match(line, /for _, m in ipairs\(hl\.get_monitors\(\)\) do if m\.name == "(eDP-1|DP-1)"/)
+})

@@ -20,6 +20,11 @@ Item {
   readonly property string configDir:
     (Quickshell.env("XDG_CONFIG_HOME") || (Quickshell.env("HOME") + "/.config")) + "/omarchy-display-setups"
   readonly property string storePath: configDir + "/profiles.json"
+  // Holds are runtime state set by other programs, not settings, so they live
+  // apart from the profiles.
+  readonly property string stateDir:
+    (Quickshell.env("XDG_STATE_HOME") || (Quickshell.env("HOME") + "/.local/state")) + "/omarchy-display-setups"
+  readonly property string holdsPath: stateDir + "/holds.json"
 
   // Names this instance in Hyprland's Lua state, so that an older instance
   // that is torn down late cannot release rules a newer one has applied.
@@ -60,9 +65,25 @@ Item {
   // Set when the last write of the profiles file failed. Kept apart from
   // lastError, which the next apply would otherwise wipe.
   property string storeWriteError: ""
+  // ---- Holds ----
+  // Other programs' say over single displays (see Model.js, Holds): a hardware
+  // key that switches a screen off, say. They win over the profile for the
+  // display they name, and are kept across restarts in holdsPath.
+  property var holds: []
+  property string holdsError: ""
+  // Holds set aside because they would leave no screen on.
+  readonly property var refusedHolds: activeProfile
+    ? Model.heldLayout(activeProfile, monitors, holds).refused
+    : Model.buildHoldsLua(monitors, holds, "", workspaces, workspaceRules).refused
+
+  // The hold on the monitor `key`, or null.
+  function holdFor(key) {
+    return Model.holdsByKey(root.monitors, root.holds)[key] || null
+  }
+
   // Connector name per workspace id, for the bar's workspace strip.
   readonly property var workspaceOwners: Model.workspaceOwnerNames(monitors, workspaces, workspaceRules)
-  readonly property bool inSync: Model.matchesLive(activeProfile, monitors, workspaceOwners, workspaces)
+  readonly property bool inSync: Model.matchesLive(activeProfile, monitors, workspaceOwners, workspaces, holds)
 
   // ---- Applying ----
   // "idle" | "running" | "ok" | "failed"
@@ -244,7 +265,7 @@ Item {
     // what is on screen after a second look is taken back, so that nothing
     // can be kept that was never seen.
     if (reason === "applied" && root.confirmPending && root.confirmArmed && root.trialLayout
-        && !Model.matchesLive(root.trialLayout, root.monitors, null, null)) {
+        && !Model.matchesLive(root.trialLayout, root.monitors, null, null, root.holds)) {
       if (root.verifyTries < 2) {
         root.verifyTries += 1
         settle.restart()
@@ -288,12 +309,16 @@ Item {
       root.activeProfile && root.autoApply ? "profile " + root.activeProfile.name : "no profile to apply")
     if (root.activeProfile && root.autoApply) {
       startApply(root.activeProfile, "profile")
+      return
     } else if (reason === "startup") {
       // Whatever an earlier instance left behind without cleaning up.
       release("")
     } else if (reason !== "reload") {
       release(root.owner)
     }
+    // The user's own configuration arranges the displays, and the holds still
+    // stand on top of it. A reload from the release above comes back here.
+    if (root.holds.length > 0) startApply(null, "holds")
   }
 
   // Hand the screens back to the user's Hyprland configuration, if the named
@@ -315,14 +340,23 @@ Item {
     }
     // Starting now supersedes whatever was still waiting its turn.
     root.pendingApply = null
-    var built = Model.buildApplyLua(layout, root.monitors, root.owner)
+    // Kind "holds" has no layout: only the held displays are touched, on top
+    // of the user's own configuration.
+    var built = kind === "holds"
+      ? Model.buildHoldsLua(root.monitors, root.holds, root.owner, root.workspaces, root.workspaceRules)
+      : Model.buildApplyLua(layout, root.monitors, root.owner, root.holds, root.workspaces, root.workspaceRules)
     if (built.lua === "") {
+      if (kind === "holds") return false
       root.applyState = "failed"
       root.lastError = "Nothing to apply: none of this profile's displays are connected."
       return false
     }
-    console.info("display-setups: applying", kind, layout.name || "(unsaved layout)")
-    root.applyNote = built.skipped.length > 0 ? "Not connected: " + built.skipped.join(", ") : ""
+    console.info("display-setups: applying", kind, layout ? layout.name || "(unsaved layout)" : "")
+    var notes = []
+    if ((built.skipped || []).length > 0) notes.push("Not connected: " + built.skipped.join(", "))
+    if (built.refused.length > 0)
+      notes.push("Not held, as it would leave no screen on: " + built.refused.map(function(h) { return h.display }).join(", "))
+    root.applyNote = notes.join(". ")
     root.applyState = "running"
     root.applying = { layout: layout, kind: kind, topology: root.topology, mayReload: built.plain || reloadFirst === true, reloadSeen: false }
     // Workspace rules set by an earlier layout replaced the user's own in
@@ -374,7 +408,9 @@ Item {
     }
     var before = root.policySource ? root.policySource.monitors : []
     var policies = Model.policiesChanged(layout.monitors, before)
-    if (!Model.changesMonitors(layout.monitors, root.monitors) && !policies) {
+    // What goes in is the layout as the holds change it.
+    var held = Model.heldLayout(layout, root.monitors, root.holds).profile
+    if (!Model.changesMonitors(held.monitors, root.monitors) && !policies) {
       if (toSave && !writeStore(storeWith(toSave))) return false
       return startApply(layout, "profile")
     }
@@ -411,7 +447,7 @@ Item {
 
   function keepChanges() {
     if (!root.confirmPending || !root.confirmArmed) return false
-    if (root.trialLayout && !Model.matchesLive(root.trialLayout, root.monitors, null, null)) {
+    if (root.trialLayout && !Model.matchesLive(root.trialLayout, root.monitors, null, null, root.holds)) {
       root.lastError = "The new layout is not on screen yet, so there is nothing to keep."
       return false
     }
@@ -467,7 +503,12 @@ Item {
     var id = existing ? existing.id : Model.newId(profiles)
     var finalName = Model.cleanName(name)
       || (existing ? existing.name : Model.suggestName(draftMonitors, root.dock, profiles))
-    var profile = Model.makeProfile(id, finalName, draftMonitors, draftWorkspaces, root.dock, dedicated)
+    // A held display is saved the way its profile has it, so that a hold in
+    // force while saving does not become part of the profile.
+    var source = existing || root.activeProfile
+    var unheld = Model.unheldDraft(draftMonitors, root.holds, source)
+    var profile = Model.makeProfile(id, finalName, unheld,
+      Model.unheldWorkspaces(draftWorkspaces, unheld, root.holds, source), root.dock, dedicated)
     return applyGuarded(profile, profile) ? id : ""
   }
 
@@ -512,6 +553,59 @@ Item {
       if (root.activeProfile && list[i].id === root.activeProfile.id) index = i
     var move = Number(step) < 0 ? -1 : 1
     return switchProfile(list[(index + move + list.length) % list.length].id)
+  }
+
+  // ---- Holds ----
+
+  // Hold `display` (a monitor key, or "desc:" and a description) in `state`
+  // for `owner`. Returns "" when the hold stands, or why it does not.
+  function setHold(display, state, owner) {
+    // Until the holds file has been read, a change here could be overwritten
+    // by it. The caller is told to try again.
+    if (!root.ready) return "Display Setups is still starting."
+    var result = Model.setHold(root.holds, display, state, owner)
+    if (result.error !== "") return result.error
+    // A hold that would leave no screen on is refused now, rather than
+    // accepted and then set aside every time a layout goes in.
+    var refused = root.activeProfile
+      ? Model.heldLayout(root.activeProfile, root.monitors, result.holds).refused
+      : Model.buildHoldsLua(root.monitors, result.holds, "", root.workspaces, root.workspaceRules).refused
+    for (var i = 0; i < refused.length; i++)
+      if (refused[i].display === String(display).trim()) return "It would leave no screen on."
+    commitHolds(result.holds)
+    return ""
+  }
+
+  // Take the hold off `display`. `anyOwner` is the panel's Release, for a
+  // hold whose owner is gone.
+  function dropHold(display, owner, anyOwner) {
+    if (!root.ready) return "Display Setups is still starting."
+    var result = Model.removeHold(root.holds, display, owner, anyOwner)
+    if (result.error !== "") return result.error
+    commitHolds(result.holds)
+    return ""
+  }
+
+  function commitHolds(next) {
+    root.holds = next
+    holdsWriteProc.pending = Model.holdsFile(next)
+    holdsWriteProc.flush()
+    // The key wins over a layout on trial: it is taken back, and what stood
+    // before goes in again with the holds on top (by the rollback, or by the
+    // reconcile after the reload that hands the screens back).
+    if (root.confirmPending) {
+      root.revertChanges(true)
+      return
+    }
+    var standing = root.standing && root.standing.topology === root.topology ? root.standing.layout : null
+    if (standing) startApply(standing, "profile")
+    else if (root.activeProfile && root.autoApply) startApply(root.activeProfile, "profile")
+    else {
+      // The user's own configuration is back in force by a reload, which
+      // drops what an earlier hold did; the holds left go in on top.
+      release(root.owner)
+      startApply(null, "holds")
+    }
   }
 
   // ---- Profiles ----
@@ -592,6 +686,14 @@ Item {
       lastError: root.lastError,
       darkNotice: root.darkNotice,
       held: root.held,
+      holds: root.holds.map(function(h) {
+        var key = Model.holdKey(root.monitors, h.display)
+        var monitor = key !== "" ? Model.monitorByKey(root.monitors, key) : null
+        var refused = root.refusedHolds.some(function(r) { return r.display === h.display })
+        return { display: h.display, state: h.state, owner: h.owner, monitor: monitor ? monitor.name : null,
+                 inForce: monitor !== null && !refused }
+      }),
+      holdsError: root.holdsError,
       workspaceOwners: root.workspaceOwners,
       monitors: root.monitors.map(function(m) {
         return { name: m.name, key: m.key, description: m.description, enabled: m.enabled, mirror: m.mirror,
@@ -690,7 +792,39 @@ Item {
         root.storeState = loaded.status
       }
       if (root.storeError !== "") root.lastError = root.storeError
+      // The holds are read before anything is applied, so that a display held
+      // off is never switched on at login, not even for a moment.
+      holdsReadProc.start(["bash", "-c", '[[ -r "$1" ]] && cat "$1"; exit 0', "_", root.holdsPath])
+    }
+  }
+
+  Runner {
+    id: holdsReadProc
+    onDone: function(exitCode, output) {
+      var loaded = Model.loadHolds(output)
+      root.holds = loaded.holds
+      root.holdsError = loaded.error
       root.probe("startup")
+    }
+  }
+
+  Runner {
+    id: holdsWriteProc
+    property string pending: ""
+    function flush() {
+      if (pending === "" || busy) return
+      var data = pending
+      pending = ""
+      // The same atomic write as the profiles file.
+      start(["bash", "-c",
+        'umask 077; mkdir -p "$1" || exit 1; tmp=$(mktemp "$1/.holds.XXXXXXXX") || exit 1; '
+        + 'if printf %s "$3" > "$tmp" && mv -f "$tmp" "$2"; then exit 0; fi; rm -f "$tmp"; exit 1',
+        "_", root.stateDir, root.holdsPath, data])
+    }
+    onDone: function(exitCode, output) {
+      root.holdsError = exitCode === 0 ? ""
+        : "Could not write " + root.holdsPath + ". The holds are in force but will be lost when the shell restarts."
+      flush()
     }
   }
 
@@ -776,7 +910,7 @@ Item {
         if (trial) {
           root.confirmArmed = true
           confirmTimer.restart()
-        } else if (done !== null) {
+        } else if (done !== null && done.kind !== "holds") {
           root.standing = { layout: done.layout, topology: done.topology }
         }
       }
@@ -901,6 +1035,15 @@ Item {
       return root.deleteProfile(id) ? "removed" : "not removed: " + root.lastError
     }
     function autoApply(enabled: string): void { root.setAutoApply(enabled === "true") }
+    // Another program's say over one display; see Model.js, Holds.
+    function hold(display: string, state: string, owner: string): string {
+      var error = root.setHold(display, state, owner)
+      return error === "" ? "held" : "refused: " + error
+    }
+    function unhold(display: string, owner: string): string {
+      var error = root.dropHold(display, owner, false)
+      return error === "" ? "released" : "refused: " + error
+    }
     function keep(): string { return root.keepChanges() ? "kept" : "nothing to confirm" }
     function revert(): string { return root.revertChanges() ? "reverting" : "nothing to confirm" }
     function resetStore(): string {

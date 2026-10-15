@@ -50,6 +50,9 @@ recognised, so two desks with identical monitors are told apart.
   can actually run at are offered.
 - **Leaves your configuration alone.** Nothing under `~/.config/hypr` is ever
   written. See [How it works](#how-it-works).
+- **Lets other programs hold a display.** A program that owns a screen's power,
+  such as a hardware key that switches a laptop's second screen off, can say
+  so, and the profiles respect it. See [Holds](#holds).
 
 ## Install
 
@@ -191,6 +194,42 @@ omarchy-shell display-setups revert
 `save` stores the arrangement that is on screen right now, so it normally
 needs no confirming.
 
+### Holds
+
+Another program can hold one display, and while it does, what it says wins
+over the profile for that display, and only for that one:
+
+```bash
+omarchy-shell display-setups hold "desc:BOE 0x0921" off "ScreenPad key"
+omarchy-shell display-setups unhold "desc:BOE 0x0921" "ScreenPad key"
+```
+
+The display is named by the key `status` lists for it, or by `desc:` and its
+full description. The states are:
+
+- **on**: the display is on, where the profile puts it, even if the profile
+  has it off.
+- **off**: the display is off, and its workspaces go to the laptop's own
+  screen, or to the first screen that is on when that one is off.
+- **reserved**: the display stays on but leaves the desktop. It is moved away
+  from the others, so the pointer cannot cross onto it, and its workspaces go
+  elsewhere as with off. For a program that draws on the screen by itself,
+  such as a touchpad surface.
+
+The answer is `held`, `released`, or `refused:` and why. A display is held by
+one owner at a time, and a hold that would leave no screen on is refused.
+While a display is held, its row in the panel says so and its On/Off button
+reads **Release**, which takes the hold away: the way out if the program that
+set it is gone. Saving a profile while a display is held saves that display
+the way the profile already had it, so a hold never ends up in a profile.
+Holds are kept across restarts, and `status` lists them with whether each is
+in force.
+
+This is meant for programs, not as a way to switch screens by hand; the panel
+does that. A program that holds a display should also make the user's own
+Hyprland configuration agree, because a config reload puts that in force for
+a moment before the hold is applied again.
+
 Bind one in `~/.config/hypr/bindings.lua` if you want a key for it:
 
 ```lua
@@ -241,9 +280,10 @@ hand-edited profile file can inject code.
 | Path | Contents |
 |---|---|
 | `~/.config/omarchy-display-setups/profiles.json` | Your saved profiles. Plain JSON, safe to back up or sync. |
+| `~/.local/state/omarchy-display-setups/holds.json` | Holds set by other programs (see [Holds](#holds)). Only written once a program sets one. |
 
-The folder follows `$XDG_CONFIG_HOME` if you have set it. Nothing is written
-outside it. Beside the profiles file it can hold a `.profiles.*` temporary
+The folders follow `$XDG_CONFIG_HOME` and `$XDG_STATE_HOME` if you have set
+them. Nothing is written outside them. Beside the profiles file it can hold a `.profiles.*` temporary
 file for the moment a save takes, and `profiles.json.unreadable-*` copies you
 set aside yourself. The profiles file is replaced atomically, and never
 overwritten if it could not be read: a file that is damaged, or written by a
@@ -274,10 +314,12 @@ back to where they were before a profile was applied.
 If you let the widget stand in for the built-in workspace switcher, bring that
 one back as described under "Workspaces in the bar".
 
-What is left is the folder with your saved profiles. To delete it as well:
+What is left is the folder with your saved profiles, and the holds file if a
+program set one. To delete them as well:
 
 ```bash
 rm -r "${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-display-setups"
+rm -r "${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-display-setups"
 ```
 
 ## Limitations

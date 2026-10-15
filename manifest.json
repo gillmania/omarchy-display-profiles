@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.gillmania.display-setups",
   "name": "Display Setups",
-  "version": "0.7.4",
+  "version": "0.8.0",
   "author": "Victor Gillholm",
   "license": "MIT",
   "description": "Mirror, extend or arrange your displays in a click, set resolution and workspaces per screen, and get the same setup back automatically for every dock, desk and projector you plug into.",

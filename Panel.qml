@@ -44,6 +44,11 @@ Panel {
   readonly property string fontFamily: bar && bar.fontFamily ? bar.fontFamily : Style.font.family
 
   readonly property bool serviceReady: service !== null && service.ready === true
+
+  // The hold another program has on the display `key`, or null.
+  function holdOf(key) {
+    return serviceReady ? service.holdFor(key) : null
+  }
   readonly property var activeProfile: serviceReady ? service.activeProfile : null
   readonly property var profiles: serviceReady ? service.profiles : []
   readonly property var selected: Model.monitorByKey(draft, selectedKey)
@@ -293,7 +298,7 @@ Panel {
         else if (t === "s" || t === "S") root.save()
         else if (t === "r" || t === "R") root.rotateSelected()
         else if (t === "e" || t === "E") {
-          if (root.selected) root.edit(root.selectedKey, { enabled: root.selected.enabled === false })
+          if (root.selected && !root.holdOf(root.selectedKey)) root.edit(root.selectedKey, { enabled: root.selected.enabled === false })
         }
       }
 
@@ -605,7 +610,10 @@ Panel {
                   Text {
                     textFormat: Text.PlainText
                     width: parent.width
-                    text: displayRow.modelData.enabled === false
+                    text: root.holdOf(displayRow.modelData.key)
+                      ? displayRow.modelData.name + " · " + root.holdOf(displayRow.modelData.key).state
+                        + " · controlled by " + root.holdOf(displayRow.modelData.key).owner
+                      : displayRow.modelData.enabled === false
                       ? displayRow.modelData.name + " · off"
                       : displayRow.modelData.mirror
                       ? displayRow.modelData.name + " · " + displayRow.modelData.width + "×" + displayRow.modelData.height
@@ -626,14 +634,19 @@ Panel {
                   anchors.right: parent.right
                   anchors.rightMargin: Style.space(6)
                   anchors.verticalCenter: parent.verticalCenter
-                  text: displayRow.modelData.enabled === false ? "Off" : "On"
+                  // A held display is switched by its holder, not here. Release
+                  // hands it back, for when the holder is gone.
+                  text: root.holdOf(displayRow.modelData.key) ? "Release"
+                    : displayRow.modelData.enabled === false ? "Off" : "On"
                   bordered: true
-                  selected: displayRow.modelData.enabled !== false
+                  selected: !root.holdOf(displayRow.modelData.key) && displayRow.modelData.enabled !== false
                   foreground: root.fg
                   fontFamily: root.fontFamily
                   onClicked: {
                     root.selectedKey = displayRow.modelData.key
-                    root.edit(displayRow.modelData.key, { enabled: displayRow.modelData.enabled === false })
+                    var hold = root.holdOf(displayRow.modelData.key)
+                    if (hold) root.service.dropHold(hold.display, "", true)
+                    else root.edit(displayRow.modelData.key, { enabled: displayRow.modelData.enabled === false })
                   }
                 }
               }

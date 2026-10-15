@@ -182,9 +182,10 @@ function logicalSize(monitor) {
 
 // Does the monitor have a desktop of its own? One that is switched off has
 // none, and neither has one that mirrors another: it shows that one's picture
-// and takes no place in the arrangement.
+// and takes no place in the arrangement. A reserved one (see Holds) is on but
+// lent to another program, so it has none either.
 function hasDesktop(monitor) {
-  return !!monitor && monitor.enabled !== false && !monitor.mirror
+  return !!monitor && monitor.enabled !== false && !monitor.mirror && monitor.reserved !== true
 }
 
 function rectOf(monitor) {
@@ -1286,9 +1287,11 @@ function selectProfile(store, id) {
 
 // Does the live setup already look like the profile? `owners` maps workspace
 // id to connector name (workspaceOwnerNames), so workspaces that have not been
-// opened yet count too.
-function matchesLive(profile, monitors, owners, liveWorkspaces) {
+// opened yet count too. With `holds`, it is the profile as the holds change
+// it that is compared, so a display held off is not drift.
+function matchesLive(profile, monitors, owners, liveWorkspaces, holds) {
   if (!profile) return false
+  profile = heldLayout(profile, monitors, holds).profile
   var live = {}
   for (var i = 0; i < (monitors || []).length; i++) live[monitors[i].key] = monitors[i]
   var present = []
@@ -1298,7 +1301,8 @@ function matchesLive(profile, monitors, owners, liveWorkspaces) {
     if (!have) return false
     if ((want.enabled !== false) !== (have.enabled !== false)) return false
     present.push(want)
-    if (want.enabled === false) continue
+    // Where a reserved display was put is its holder's business.
+    if (want.enabled === false || want.reserved === true) continue
     if ((want.mirror || "") !== (have.mirror || "")) return false
     if (!want.mirror && (want.x !== have.x || want.y !== have.y)) return false
     if (want.width !== have.width || want.height !== have.height) return false
@@ -1345,6 +1349,270 @@ function changesMonitors(wanted, monitors) {
   return false
 }
 
+// ---- Workspace moves --------------------------------------------------------
+
+// Lua that moves workspace `id` to `monitor` if both are there. A monitor
+// switched on earlier in the same chunk is not there yet, and moving onto it
+// fails; Hyprland moves such workspaces by their rules itself once the
+// monitor has been added, so the move is only needed for monitors already on.
+function moveLine(id, monitor) {
+  return "if hl.get_workspace(" + id + ") then for _, m in ipairs(hl.get_monitors()) do if m.name == \"" + monitor
+    + "\" then hl.dispatch(hl.dsp.workspace.move({ workspace = " + id + ", monitor = \"" + monitor + "\" })) end end end"
+}
+
+// ---- Holds ------------------------------------------------------------------
+
+// A hold is another program's say over one display, set through IPC: a
+// hardware key that switches a screen on and off, say. While it stands it wins
+// over the profile for that display, and only for that one:
+//   on        the display is on, where the profile puts it
+//   off       the display is off, and its workspaces go to another
+//   reserved  the display is on but out of the desktop: moved away from the
+//             others so the pointer cannot cross onto it, and given no
+//             workspaces. For a program that draws on it by itself.
+// `display` is a monitor key, or "desc:" and the display's full description.
+// Holds are only ever matched against monitors, never put into Lua.
+
+var HOLD_STATES = ["on", "off", "reserved"]
+var HOLD_LIMIT = 16
+// How far beyond the desktop a reserved display is put. Displays that do not
+// share an edge cannot be crossed by the pointer.
+var RESERVED_GAP = 10000
+
+function cleanOwner(owner) {
+  return clean(owner).replace(/[^\x20-\x7e]/g, "").slice(0, 48)
+}
+
+function validHold(hold) {
+  if (!hold || typeof hold !== "object") return null
+  var display = clean(hold.display)
+  var owner = cleanOwner(hold.owner)
+  if (display === "" || display.length > 160 || owner === "") return null
+  if (HOLD_STATES.indexOf(hold.state) === -1) return null
+  return { display: display, state: hold.state, owner: owner }
+}
+
+// The holds file, as written by holdsFile(). Anything that is not understood
+// is dropped rather than guessed at: a hold that is not there is the safe side,
+// since the display then simply follows its profile.
+function loadHolds(raw) {
+  var parsed = null
+  try {
+    parsed = raw ? JSON.parse(String(raw)) : null
+  } catch (e) {
+    return { holds: [], error: "The holds file could not be read, so no holds are in force." }
+  }
+  if (!parsed) return { holds: [], error: "" }
+  if (parsed.version !== 1 || !Array.isArray(parsed.holds))
+    return { holds: [], error: "The holds file is in a format this version does not know, so no holds are in force." }
+  var holds = []
+  var seen = {}
+  for (var i = 0; i < parsed.holds.length && holds.length < HOLD_LIMIT; i++) {
+    var hold = validHold(parsed.holds[i])
+    if (!hold || seen[hold.display]) continue
+    seen[hold.display] = true
+    holds.push(hold)
+  }
+  return { holds: holds, error: "" }
+}
+
+function holdsFile(holds) {
+  return JSON.stringify({ version: 1, holds: holds || [] }, null, 2) + "\n"
+}
+
+// The key of the one connected monitor a hold names, or "" when it names
+// none, or more than one.
+function holdKey(monitors, display) {
+  var wanted = clean(display)
+  var description = wanted.indexOf("desc:") === 0 ? clean(wanted.slice(5)) : ""
+  var found = []
+  for (var i = 0; i < (monitors || []).length; i++) {
+    var m = monitors[i]
+    if (m.key === wanted || (description !== "" && m.description === description)) found.push(m.key)
+  }
+  return found.length === 1 ? found[0] : ""
+}
+
+// The holds that bear on what is connected now, by monitor key.
+function holdsByKey(monitors, holds) {
+  var byKey = {}
+  for (var i = 0; i < (holds || []).length; i++) {
+    var key = holdKey(monitors, holds[i].display)
+    if (key !== "" && !byKey[key]) byKey[key] = holds[i]
+  }
+  return byKey
+}
+
+// Add or change the hold on `display`. A display is held by one owner at a
+// time; another owner is turned away rather than quietly overruled.
+function setHold(holds, display, state, owner) {
+  var hold = validHold({ display: display, state: state, owner: owner })
+  if (!hold) return { holds: holds, error: "A hold needs a display, one of on, off or reserved, and an owner." }
+  var next = []
+  var replaced = false
+  for (var i = 0; i < (holds || []).length; i++) {
+    if (holds[i].display !== hold.display) { next.push(holds[i]); continue }
+    if (holds[i].owner !== hold.owner) return { holds: holds, error: "That display is held by " + holds[i].owner + "." }
+    next.push(hold)
+    replaced = true
+  }
+  if (!replaced) {
+    if (next.length >= HOLD_LIMIT) return { holds: holds, error: "Too many displays are held." }
+    next.push(hold)
+  }
+  return { holds: next, error: "" }
+}
+
+// Take the hold off `display`. Only its owner may, except with `anyOwner`,
+// which is the panel's Release: the way out when the owner is gone.
+function removeHold(holds, display, owner, anyOwner) {
+  var wanted = clean(display)
+  var next = []
+  var found = null
+  for (var i = 0; i < (holds || []).length; i++) {
+    if (holds[i].display === wanted) found = holds[i]
+    else next.push(holds[i])
+  }
+  if (!found) return { holds: holds, error: "That display is not held." }
+  if (anyOwner !== true && found.owner !== cleanOwner(owner)) return { holds: holds, error: "That display is held by " + found.owner + "." }
+  return { holds: next, error: "" }
+}
+
+// Where a reserved display goes: right of the desktop, with a gap no pointer
+// can cross.
+function reservedSpot(monitors) {
+  var bounds = layoutBounds(monitors)
+  return { x: Math.round(bounds.x + bounds.width + RESERVED_GAP), y: Math.round(bounds.y) }
+}
+
+// Would these monitors leave at least one desktop that is connected?
+function anyDesktop(list, connected) {
+  for (var i = 0; i < list.length; i++) if (connected[list[i].key] && hasDesktop(list[i])) return true
+  return false
+}
+
+// The layout a profile stands for once the holds are taken into account, as
+// { profile, refused }. Holds that would leave no desktop on any connected
+// display are set aside and listed in `refused`: like everywhere else here,
+// a layout that turns every screen off is never applied.
+function heldLayout(profile, monitors, holds) {
+  var byKey = holdsByKey(monitors, holds)
+  if (!profile || Object.keys(byKey).length === 0) return { profile: profile, refused: [] }
+  var connected = {}
+  for (var c = 0; c < (monitors || []).length; c++) connected[monitors[c].key] = true
+
+  function build(allowAway) {
+    var list = []
+    for (var i = 0; i < profile.monitors.length; i++) {
+      var copy = cloneMonitor(profile.monitors[i])
+      var hold = byKey[copy.key]
+      if (hold && hold.state === "on") {
+        if (copy.enabled === false) copy.mirror = ""
+        copy.enabled = true
+      } else if (hold && allowAway && hold.state === "off") {
+        copy.enabled = false
+        copy.mirror = ""
+      } else if (hold && allowAway && hold.state === "reserved") {
+        copy.enabled = true
+        copy.mirror = ""
+        copy.reserved = true
+      }
+      list.push(copy)
+    }
+    // Nothing goes on mirroring a display that has no desktop of its own now.
+    for (var j = 0; j < list.length; j++) {
+      if (!list[j].mirror) continue
+      var source = monitorByKey(list, list[j].mirror)
+      if (!hasDesktop(source)) list[j].mirror = ""
+    }
+    var spot = reservedSpot(list)
+    for (var k = 0; k < list.length; k++)
+      if (list[k].reserved === true) { list[k].x = spot.x; list[k].y = spot.y }
+    return list
+  }
+
+  var list = build(true)
+  var refused = []
+  if (!anyDesktop(list, connected)) {
+    list = build(false)
+    for (var key in byKey) if (byKey[key].state !== "on") refused.push(byKey[key])
+  }
+  var held = {}
+  for (var f in profile) held[f] = profile[f]
+  held.monitors = list
+  return { profile: held, refused: refused }
+}
+
+// The live layout a hold-free draft should be saved with: a display held off
+// or reserved right now is saved the way the profile has it, not the way the
+// hold left it, so a hold never ends up baked into a saved profile.
+function unheldDraft(draft, holds, profile) {
+  var byKey = holdsByKey(draft, holds)
+  var result = []
+  for (var i = 0; i < (draft || []).length; i++) {
+    var copy = cloneMonitor(draft[i])
+    var hold = byKey[copy.key]
+    var saved = profile ? monitorByKey(profile.monitors, copy.key) : null
+    if (hold && saved) {
+      var keep = { key: copy.key, name: copy.name, modes: copy.modes, description: copy.description }
+      copy = cloneMonitor(saved)
+      for (var k in keep) if (keep[k] !== undefined) copy[k] = keep[k]
+      copy.vrrPolicy = validVrr(saved.vrr)
+    }
+    delete copy.reserved
+    result.push(copy)
+  }
+  return result
+}
+
+// The same for workspaces: those the profile gives a display that is held off
+// or reserved go back to it, rather than staying where the hold sent them.
+function unheldWorkspaces(workspaces, monitors, holds, profile) {
+  var byKey = holdsByKey(monitors, holds)
+  var result = {}
+  for (var k in workspaces || {}) result[k] = (workspaces[k] || []).slice()
+  if (!profile || profile.dedicated === false) return result
+  for (var key in byKey) {
+    if (byKey[key].state === "on") continue
+    var ids = (profile.workspaces && profile.workspaces[key]) || []
+    for (var i = 0; i < ids.length; i++) result = assignWorkspace(monitors, result, ids[i], key)
+  }
+  return result
+}
+
+// Workspace ids 1..WORKSPACE_COUNT that sit on, or have a rule for, one of
+// `keys` right now.
+function workspacesOn(monitors, keys, liveWorkspaces, rules) {
+  var ids = []
+  function add(id, selector) {
+    var key = keyForSelector(monitors, selector)
+    if (keys.indexOf(key) === -1 || id < 1 || id > WORKSPACE_COUNT || ids.indexOf(id) !== -1) return
+    ids.push(id)
+  }
+  for (var r = 0; r < (rules || []).length; r++) add(rules[r].id, rules[r].monitor)
+  for (var w = 0; w < (liveWorkspaces || []).length; w++) add(liveWorkspaces[w].id, liveWorkspaces[w].monitor)
+  ids.sort(function(a, b) { return a - b })
+  return ids
+}
+
+// Lua lines that send the workspaces of displays held off or reserved to
+// `target`, for layouts that otherwise leave workspaces to the user's own
+// rules. Such rules replace the user's in place, so the chunk also marks that
+// rules are in force: the next layout without them reloads the config first
+// (see RULES_CHECK) and the user's own rules come back.
+function awayWorkspaceLines(monitors, awayKeys, target, liveWorkspaces, rules) {
+  var ids = awayKeys.length > 0 && target ? workspacesOn(monitors, awayKeys, liveWorkspaces, rules) : []
+  if (ids.length === 0) return []
+  var lines = ["__display_setups_has_rules = true"]
+  var moves = []
+  for (var i = 0; i < ids.length; i++) {
+    lines.push('__display_setups_rules[#__display_setups_rules + 1] = hl.workspace_rule({ workspace = "'
+      + ids[i] + '", monitor = "' + target + '" })')
+    moves.push(moveLine(ids[i], target))
+  }
+  return lines.concat(moves)
+}
+
 // ---- Applying ---------------------------------------------------------------
 
 var SAFE_NAME = /^[A-Za-z0-9._-]+$/
@@ -1369,7 +1637,14 @@ function luaNumber(value, fallback, decimals) {
 //
 // `owner` names the service instance applying it, so that an older instance
 // shutting down late does not switch these rules off (see buildReleaseLua).
-function buildApplyLua(profile, monitors, owner) {
+//
+// `holds` change the profile for the displays they name (see heldLayout);
+// `liveWorkspaces` and `rules` say where workspaces are now, which a profile
+// without dedicated workspaces needs to send those of a display held off or
+// reserved elsewhere. `refused` lists holds that were set aside.
+function buildApplyLua(profile, monitors, owner, holds, liveWorkspaces, rules) {
+  var held = heldLayout(profile, monitors, holds)
+  profile = held.profile
   var nameByKey = {}
   for (var i = 0; i < (monitors || []).length; i++) {
     var live = monitors[i]
@@ -1387,8 +1662,10 @@ function buildApplyLua(profile, monitors, owner) {
     if (m && hasDesktop(m) && nameByKey[m.key]) enabledCount++
   }
   // Never apply a profile that would turn every connected screen off.
-  if (enabledCount === 0) return { lua: "", skipped: [], plain: false }
+  if (enabledCount === 0) return { lua: "", skipped: [], plain: false, refused: held.refused }
 
+  var reserved = []
+  var awayKeys = []
   for (var k = 0; k < profile.monitors.length; k++) {
     var want = profile.monitors[k]
     if (!want) continue
@@ -1396,6 +1673,7 @@ function buildApplyLua(profile, monitors, owner) {
     if (!name) { skipped.push(want.description || want.key); continue }
     if (want.enabled === false) {
       disables.push('hl.monitor({ output = "' + name + '", disabled = true })')
+      awayKeys.push(want.key)
       continue
     }
     var width = Math.round(num(want.width, 0))
@@ -1408,6 +1686,12 @@ function buildApplyLua(profile, monitors, owner) {
     var settings = 'mode = "' + mode + '", scale = ' + luaNumber(want.scale, 1, 6)
       + ", transform = " + Math.round(num(want.transform, 0)) % 8 + ", disabled = false"
       + (validVrr(want.vrr) !== null ? ", vrr = " + validVrr(want.vrr) : "")
+    if (want.reserved === true) {
+      reserved.push('hl.monitor({ output = "' + name + '", ' + settings + ', position = "'
+        + Math.round(num(want.x, 0)) + "x" + Math.round(num(want.y, 0)) + '", mirror = "" })')
+      awayKeys.push(want.key)
+      continue
+    }
     var shown = want.mirror ? nameByKey[want.mirror] : ""
     var source = null
     for (var s2 = 0; s2 < profile.monitors.length; s2++)
@@ -1422,10 +1706,10 @@ function buildApplyLua(profile, monitors, owner) {
       + Math.round(num(want.x, 0)) + "x" + Math.round(num(want.y, 0)) + '", mirror = "" })')
   }
 
-  // Desktops first, then the screens that mirror them, and screens are
-  // switched off last, so a failure part way through leaves more screens lit
-  // rather than fewer.
-  lines = lines.concat(mirrors).concat(disables)
+  // Desktops first, then reserved screens and the screens that mirror them,
+  // and screens are switched off last, so a failure part way through leaves
+  // more screens lit rather than fewer.
+  lines = lines.concat(reserved).concat(mirrors).concat(disables)
   // Ownership is recorded before the first change, so that a chunk failing
   // part way through still leaves something for the release to find.
   lines.unshift('__display_setups_owner = "' + (SAFE_NAME.test(clean(owner)) ? clean(owner) : "") + '"')
@@ -1437,9 +1721,20 @@ function buildApplyLua(profile, monitors, owner) {
   // in Hyprland.
   lines.push("__display_setups_rules = {}")
   // A profile without dedicated workspaces arranges the displays and leaves
-  // the workspaces to the user's own rules. `plain` tells the caller that
-  // rules an earlier layout left behind have to be cleared first.
-  if (profile.dedicated === false) return { lua: lines.join("\n"), skipped: skipped, plain: true }
+  // the workspaces to the user's own rules, except for those of a display a
+  // hold takes away. `plain` tells the caller that rules an earlier layout
+  // left behind have to be cleared first.
+  if (profile.dedicated === false) {
+    var heldAway = []
+    var byKey = holdsByKey(monitors, holds)
+    for (var a = 0; a < awayKeys.length; a++)
+      if (byKey[awayKeys[a]] && held.refused.indexOf(byKey[awayKeys[a]]) === -1) heldAway.push(awayKeys[a])
+    var desktops = []
+    for (var d = 0; d < profile.monitors.length; d++)
+      if (enabledNames[profile.monitors[d].key]) desktops.push(profile.monitors[d])
+    var away = awayWorkspaceLines(monitors, heldAway, enabledNames[primaryKey(desktops)], liveWorkspaces, rules)
+    return { lua: lines.concat(away).join("\n"), skipped: skipped, plain: true, refused: held.refused }
+  }
   // Set before the first rule, so a chunk failing part way still says so.
   lines.push("__display_setups_has_rules = true")
 
@@ -1464,12 +1759,65 @@ function buildApplyLua(profile, monitors, owner) {
       if (!isFinite(id) || id < 1 || id > WORKSPACE_COUNT) continue
       lines.push('__display_setups_rules[#__display_setups_rules + 1] = hl.workspace_rule({ workspace = "'
         + id + '", monitor = "' + target + '", default = ' + (w === 0 ? "true" : "false") + " })")
-      moves.push("if hl.get_workspace(" + id + ') then hl.dispatch(hl.dsp.workspace.move({ workspace = '
-        + id + ', monitor = "' + target + '" })) end')
+      moves.push(moveLine(id, target))
     }
   }
 
-  return { lua: lines.concat(moves).join("\n"), skipped: skipped, plain: false }
+  return { lua: lines.concat(moves).join("\n"), skipped: skipped, plain: false, refused: held.refused }
+}
+
+// The Lua for holds alone, while no profile is applied and the user's own
+// configuration arranges the displays: only the held displays are touched.
+// Returns { lua, refused }; an empty `lua` means there is nothing to do.
+function buildHoldsLua(monitors, holds, owner, liveWorkspaces, rules) {
+  var byKey = holdsByKey(monitors, holds)
+  var list = []
+  for (var i = 0; i < (monitors || []).length; i++) {
+    var copy = cloneMonitor(monitors[i])
+    if (byKey[copy.key] && byKey[copy.key].state === "on") copy.enabled = true
+    list.push(copy)
+  }
+  // The same rule as for profiles: holds that would leave no desktop are set aside.
+  var connected = {}
+  for (var c = 0; c < list.length; c++) connected[list[c].key] = true
+  var trial = []
+  for (var t = 0; t < list.length; t++) {
+    var probe = cloneMonitor(list[t])
+    var h = byKey[probe.key]
+    if (h && h.state !== "on") probe.reserved = true
+    trial.push(probe)
+  }
+  var refused = []
+  var allowAway = anyDesktop(trial, connected)
+  if (!allowAway) for (var key in byKey) if (byKey[key].state !== "on") refused.push(byKey[key])
+
+  var enables = [], reserves = [], disables = [], awayKeys = []
+  var desktops = []
+  for (var j = 0; j < list.length; j++) {
+    var m = list[j]
+    var hold = byKey[m.key]
+    var away = hold && allowAway && hold.state !== "on"
+    if (!away && hasDesktop(m)) desktops.push(m)
+    if (!hold || !SAFE_NAME.test(m.name)) continue
+    if (hold.state === "on") enables.push('hl.monitor({ output = "' + m.name + '", disabled = false })')
+    else if (!allowAway) continue
+    else if (hold.state === "off") { disables.push('hl.monitor({ output = "' + m.name + '", disabled = true })'); awayKeys.push(m.key) }
+    else { reserves.push(m); awayKeys.push(m.key) }
+  }
+  var spot = reservedSpot(desktops)
+  for (var r = 0; r < reserves.length; r++)
+    reserves[r] = 'hl.monitor({ output = "' + reserves[r].name + '", disabled = false, position = "'
+      + spot.x + "x" + spot.y + '", mirror = "" })'
+  var body = enables.concat(reserves).concat(disables)
+  if (body.length === 0) return { lua: "", refused: refused }
+  var primary = monitorByKey(desktops, primaryKey(desktops))
+  var lines = ['__display_setups_owner = "' + (SAFE_NAME.test(clean(owner)) ? clean(owner) : "") + '"',
+               "__display_setups_rules = __display_setups_rules or {}"]
+  return {
+    lua: lines.concat(body).concat(awayWorkspaceLines(monitors, awayKeys,
+      primary && SAFE_NAME.test(primary.name) ? primary.name : "", liveWorkspaces, rules)).join("\n"),
+    refused: refused
+  }
 }
 
 // Hand the screens back to the user's own Hyprland configuration. Rules set
@@ -1549,7 +1897,19 @@ if (typeof module !== "undefined") {
     removeProfile: removeProfile,
     matchesLive: matchesLive,
     buildApplyLua: buildApplyLua,
+    buildHoldsLua: buildHoldsLua,
     buildReleaseLua: buildReleaseLua,
+    HOLD_LIMIT: HOLD_LIMIT,
+    loadHolds: loadHolds,
+    holdsFile: holdsFile,
+    holdKey: holdKey,
+    holdsByKey: holdsByKey,
+    setHold: setHold,
+    removeHold: removeHold,
+    heldLayout: heldLayout,
+    unheldDraft: unheldDraft,
+    unheldWorkspaces: unheldWorkspaces,
+    workspacesOn: workspacesOn,
     RULES_MARK: RULES_MARK,
     RULES_CHECK: RULES_CHECK,
     cleanScale: cleanScale,
